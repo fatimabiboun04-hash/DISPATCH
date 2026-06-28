@@ -16,6 +16,7 @@ class CheckInRequest extends FormRequest
         return [
             'latitude' => ['required', 'numeric', 'between:-90,90'],
             'longitude' => ['required', 'numeric', 'between:-180,180'],
+            'accuracy_meters' => ['nullable', 'numeric', 'min:0'],
             'device_fingerprint' => ['required', 'string', 'max:500'],
             'selfie' => ['nullable', 'image', 'max:5120'], // 5MB max
         ];

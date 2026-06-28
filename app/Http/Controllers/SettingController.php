@@ -22,6 +22,19 @@ class SettingController extends Controller
     }
 
     /**
+     * Allowed setting keys — prevents arbitrary key creation.
+     */
+    protected array $allowedKeys = [
+        'friday_lock_hour',
+        'check_in_grace_minutes',
+        'gps_max_accuracy',
+        'office_location',
+        'max_early_check_in_minutes',
+        'weekly_hours_limit_default',
+        'absence_alert_threshold',
+    ];
+
+    /**
      * Update settings (batch).
      */
     public function update(Request $request)
@@ -34,11 +47,16 @@ class SettingController extends Controller
         ]);
 
         foreach ($validated['settings'] as $settingData) {
+            // Only allow predefined keys
+            if (! in_array($settingData['key'], $this->allowedKeys, true)) {
+                continue;
+            }
+
             Setting::updateOrCreate(
                 ['key' => $settingData['key']],
                 [
-                    'value' => is_array($settingData['value']) 
-                        ? $settingData['value'] 
+                    'value' => is_array($settingData['value'])
+                        ? $settingData['value']
                         : ['value' => $settingData['value']],
                     'group' => $settingData['group'] ?? 'general',
                 ]

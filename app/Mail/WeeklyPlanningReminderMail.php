@@ -2,7 +2,6 @@
 
 namespace App\Mail;
 
-use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
@@ -14,6 +13,7 @@ class WeeklyPlanningReminderMail extends Mailable
     use Queueable, SerializesModels;
 
     public int $weekNumber;
+
     public int $year;
 
     public function __construct(int $weekNumber, int $year)
@@ -39,7 +39,7 @@ class WeeklyPlanningReminderMail extends Mailable
             with: [
                 'weekNumber' => $this->weekNumber,
                 'year' => $this->year,
-                'weekRange' => $startOfWeek->format('M d') . ' - ' . $endOfWeek->format('M d, Y'),
+                'weekRange' => $startOfWeek->format('M d').' - '.$endOfWeek->format('M d, Y'),
             ],
         );
     }

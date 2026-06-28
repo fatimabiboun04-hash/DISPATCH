@@ -52,7 +52,7 @@ class Planning extends Model
     {
         return $this->hasMany(Pointage::class);
     }
-    
+
     public function pauses()
     {
         return $this->hasMany(Pause::class);

@@ -14,6 +14,7 @@ class DeviceController extends Controller
     public function index(Request $request)
     {
         $devices = Device::with('user')->paginate(20);
+
         return $this->paginatedResponse($devices);
     }
 

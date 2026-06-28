@@ -17,7 +17,9 @@ class SendLeaveRequestEmailJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public LeaveRequest $leaveRequest;
+
     public string $recipientType;
+
     public string $action;
 
     public function __construct(LeaveRequest $leaveRequest, string $recipientType, string $action)
@@ -36,6 +38,7 @@ class SendLeaveRequestEmailJob implements ShouldQueue
                     new LeaveRequestNotificationMail($this->leaveRequest, 'admin', $this->action)
                 );
             }
+
             return;
         }
 

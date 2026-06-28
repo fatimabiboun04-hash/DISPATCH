@@ -9,24 +9,25 @@ return new class extends Migration
     /**
      * Run the migrations.
      */
-   public function up(): void
-{
-    Schema::create('teams', function (Blueprint $table) {
-        $table->id();
-        $table->string('name');
-        $table->text('description')->nullable();
-        
-        // Team leader reference (nullable — team can exist without leader initially)
-        $table->foreignId('leader_id')->nullable()->constrained('users')->nullOnDelete();
-        
-        // UI color for card display
-        $table->string('color')->nullable()->default('#3B82F6');
-        
-        $table->timestamps();
-        
-        $table->index('leader_id');
-    });
-}
+    public function up(): void
+    {
+        Schema::create('teams', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+            $table->text('description')->nullable();
+
+            // Team leader reference (nullable — team can exist without leader initially)
+            $table->foreignId('leader_id')->nullable()->constrained('users')->nullOnDelete();
+
+            // UI color for card display
+            $table->string('color')->nullable()->default('#3B82F6');
+
+            $table->timestamps();
+
+            $table->index('leader_id');
+        });
+    }
+
     /**
      * Reverse the migrations.
      */

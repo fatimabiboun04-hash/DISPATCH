@@ -13,17 +13,19 @@ class StorePlanningRequest extends FormRequest
 
     public function rules(): array
     {
-        // On update (PUT/PATCH), do NOT enforce future-date constraint
-        $dateRules = $this->isMethod('POST')|| $this->isMethod('PUT') || $this->isMethod('PATCH')
-            ? ['required', 'date', 'after_or_equal:today']
+        // Creating new planning must be current-week-safe; updating existing records may edit historical corrections.
+        $weekStart = now()->startOfWeek()->toDateString();
+        $dateRules = $this->isMethod('POST')
+            ? ['required', 'date', "after_or_equal:{$weekStart}"]
             : ['required', 'date'];
- 
+
         return [
-            'user_id'  => ['required', 'exists:users,id'],
+
+            'user_id' => ['required', 'exists:users,id'],
             'shift_id' => ['required', 'exists:shifts,id'],
-            'date'     => $dateRules,
-            'team_id'  => ['nullable', 'exists:teams,id'],
-            'notes'    => ['nullable', 'string', 'max:1000'],
+            'date' => $dateRules,
+            'team_id' => ['nullable', 'exists:teams,id'],
+            'notes' => ['nullable', 'string', 'max:1000'],
         ];
     }
 }

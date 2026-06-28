@@ -9,17 +9,17 @@ return new class extends Migration
     /**
      * Run the migrations.
      */
-   public function up(): void
-{
-    Schema::create('skills', function (Blueprint $table) {
-        $table->id();
-        $table->string('name')->unique();
-        $table->string('category')->nullable(); // Grouping: "Technical", "Safety", etc.
-        $table->timestamps();
-        
-        $table->index('category');
-    });
-}
+    public function up(): void
+    {
+        Schema::create('skills', function (Blueprint $table) {
+            $table->id();
+            $table->string('name')->unique();
+            $table->string('category')->nullable(); // Grouping: "Technical", "Safety", etc.
+            $table->timestamps();
+
+            $table->index('category');
+        });
+    }
 
     /**
      * Reverse the migrations.

@@ -10,14 +10,15 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Facades\Storage;
 
 class GenerateReportJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public Report $report;
+
     public int $tries = 3;
+
     public int $timeout = 300;
 
     public function __construct(Report $report)
@@ -28,7 +29,9 @@ class GenerateReportJob implements ShouldQueue
     public function handle(): void
     {
         try {
-            $generator = new \App\Services\ReportGeneratorService();
+            $this->report->update(['status' => 'processing']);
+
+            $generator = new \App\Services\ReportGeneratorService;
             $filePath = $generator->generate($this->report);
 
             $this->report->update([

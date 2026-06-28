@@ -53,11 +53,11 @@ class LeaveRequest extends Model
     {
         return $query->where(function ($q) use ($start, $end) {
             $q->whereBetween('start_date', [$start, $end])
-              ->orWhereBetween('end_date', [$start, $end])
-              ->orWhere(function ($sq) use ($start, $end) {
-                  $sq->where('start_date', '<=', $start)
-                     ->where('end_date', '>=', $end);
-              });
+                ->orWhereBetween('end_date', [$start, $end])
+                ->orWhere(function ($sq) use ($start, $end) {
+                    $sq->where('start_date', '<=', $start)
+                        ->where('end_date', '>=', $end);
+                });
         });
     }
 }

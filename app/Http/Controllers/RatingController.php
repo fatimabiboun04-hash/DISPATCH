@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Models\Rating;
 use App\Models\User;
 use App\Services\AuditService;
+use App\Services\NotificationService;
+use App\Services\PlanningService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 
@@ -14,18 +16,19 @@ class RatingController extends Controller
 
     /**
      * Toggle rating between ⭐ (Excellent) and 🚩 (Warning)
-     * 
+     *
      * First click on same star → Creates Excellent rating
      * Second click on same star (if Excellent exists) → Converts to Warning
-     * 
+     *
      * This implements the prompt requirement:
      * "First click → Yellow star ⭐ (Excellent)
      *  Second click on same star → Red flag 🚩 (Warning / behavioral issue)"
      */
     public function toggle(Request $request, User $employee)
     {
-        // Only admins can rate employees
-       
+        if (! $request->user() || ! $request->user()->isAdmin()) {
+            return $this->errorResponse('Unauthorized. Only admins can rate employees.', 403);
+        }
 
         $weekNumber = now()->isoWeek();
         $year = now()->isoWeekYear();
@@ -63,6 +66,9 @@ class RatingController extends Controller
                 'employee_id' => $employee->id,
             ]);
 
+            app(NotificationService::class)->notifyRatingGiven($employee, 'warning');
+            PlanningService::bumpSuggestionsVersion();
+
             return $this->successResponse([
                 'rating' => $rating,
                 'type' => 'warning',
@@ -91,6 +97,9 @@ class RatingController extends Controller
             'employee_id' => $employee->id,
         ]);
 
+        app(NotificationService::class)->notifyRatingGiven($employee, 'excellent');
+        PlanningService::bumpSuggestionsVersion();
+
         return $this->successResponse([
             'rating' => $rating,
             'type' => 'excellent',
@@ -113,7 +122,7 @@ class RatingController extends Controller
             ->first();
 
         return $this->successResponse([
-            'has_rating' => !is_null($rating),
+            'has_rating' => ! is_null($rating),
             'type' => $rating?->type,
             'icon' => $rating?->type === 'excellent' ? '⭐' : ($rating?->type === 'warning' ? '🚩' : null),
             'reason' => $rating?->reason,

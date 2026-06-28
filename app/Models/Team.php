@@ -31,7 +31,8 @@ class Team extends Model
     {
         return $this->hasMany(Planning::class);
     }
-        public function pauses()
+
+    public function pauses()
     {
         return $this->hasMany(Pause::class);
     }

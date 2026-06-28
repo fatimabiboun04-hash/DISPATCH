@@ -20,6 +20,7 @@ class Pointage extends Model
         'worked_minutes',
         'delay_minutes',
         'early_leave_minutes',
+        'overtime_minutes',
         'verification_data',
         'is_flagged',
         'flag_reason',
@@ -36,6 +37,7 @@ class Pointage extends Model
         'worked_minutes' => 'integer',
         'delay_minutes' => 'integer',
         'early_leave_minutes' => 'integer',
+        'overtime_minutes' => 'integer',
     ];
 
     public function user()

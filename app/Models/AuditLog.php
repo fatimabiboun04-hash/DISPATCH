@@ -29,18 +29,21 @@ class AuditLog extends Model
         'created_at' => 'datetime',
     ];
 
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
     public static function boot()
-{
-    parent::boot();
+    {
+        parent::boot();
 
-    static::updating(function ($model) {
-        // Throw instead of returning false — Laravel 10 ignores false returns
-        throw new \RuntimeException('AuditLog records are immutable and cannot be updated.');
-    });
+        static::updating(function ($model) {
+            throw new \RuntimeException('AuditLog records are immutable and cannot be updated.');
+        });
 
-    static::deleting(function ($model) {
-        // Throw instead of returning false — Laravel 10 ignores false returns
-        throw new \RuntimeException('AuditLog records are immutable and cannot be deleted.');
-    });
-}
+        static::deleting(function ($model) {
+            throw new \RuntimeException('AuditLog records are immutable and cannot be deleted.');
+        });
+    }
 }

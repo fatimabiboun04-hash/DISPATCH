@@ -16,6 +16,7 @@ class SendWeeklyPlanningReminderJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public int $weekNumber;
+
     public int $year;
 
     public function __construct(int $weekNumber, int $year)

@@ -16,6 +16,7 @@ class NotificationController extends Controller
     {
         $notifications = $request->user()
             ->notifications()
+            ->orderBy('created_at', 'desc')
             ->paginate(20);
 
         return $this->paginatedResponse($notifications);
@@ -31,7 +32,7 @@ class NotificationController extends Controller
             ->where('id', $id)
             ->first();
 
-        if (!$notification) {
+        if (! $notification) {
             return $this->errorResponse('Notification not found', 404);
         }
 
@@ -45,7 +46,7 @@ class NotificationController extends Controller
      */
     public function markAllRead(Request $request)
     {
-        $request->user()->unreadNotifications->markAsRead();
+        $request->user()->unreadNotifications()->update(['read_at' => now()]);
 
         return $this->successResponse(null, 'All notifications marked as read');
     }

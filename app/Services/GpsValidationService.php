@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Setting;
+use Illuminate\Support\Facades\Cache;
 
 class GpsValidationService
 {
@@ -10,7 +11,7 @@ class GpsValidationService
      * Calculate distance between two coordinates using Haversine formula.
      * Returns distance in meters.
      */
-    public function calculateDistance(float $lat1, float $lon1, float $lat2, float $lon2): float
+    private function calculateDistance(float $lat1, float $lon1, float $lat2, float $lon2): float
     {
         $earthRadius = 6371000; // meters
 
@@ -32,8 +33,10 @@ class GpsValidationService
      */
     public function validate(float $latitude, float $longitude): array
     {
-        $officeLocation = Setting::get('office_location', []);
-        
+        $officeLocation = Cache::remember('office_location', 300, function () {
+            return Setting::get('office_location', []);
+        });
+
         if (empty($officeLocation)) {
             return [
                 'valid' => false,

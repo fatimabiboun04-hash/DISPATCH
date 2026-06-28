@@ -4,8 +4,8 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\HasApiTokens;
 
 class User extends Authenticatable
@@ -16,18 +16,16 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
-        'role',
-        'status',
-        'suspension_reason',
         'phone',
         'description',
         'avatar',
-        'weekly_hours_limit',
+        'status',
     ];
 
     protected $hidden = [
         'password',
         'remember_token',
+        'suspension_reason',
     ];
 
     protected $casts = [
@@ -35,6 +33,7 @@ class User extends Authenticatable
         'password' => 'hashed',
         'weekly_hours_limit' => 'decimal:2',
     ];
+
     protected $appends = ['avatar_url'];
 
     // ── Accessors ──
@@ -50,6 +49,7 @@ class User extends Authenticatable
         foreach (array_slice($words, 0, 2) as $word) {
             $initials .= strtoupper(substr($word, 0, 1));
         }
+
         return $initials;
     }
 
@@ -147,21 +147,19 @@ class User extends Authenticatable
     {
         return $this->status === 'suspended';
     }
-    
+
     public function pauses()
     {
         return $this->hasMany(Pause::class);
     }
-   // add this accessor:
+    // add this accessor:
 
-public function getAvatarUrlAttribute(): ?string
-{
-    if (!$this->avatar) {
-        return null; // Frontend generates initials avatar when null
+    public function getAvatarUrlAttribute(): ?string
+    {
+        if (! $this->avatar) {
+            return null; // Frontend generates initials avatar when null
+        }
+
+        return Storage::disk('public')->url($this->avatar);
     }
-    return Storage::disk('public')->url($this->avatar);
-}
-
-
-
 }

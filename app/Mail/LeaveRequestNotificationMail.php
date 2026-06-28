@@ -14,7 +14,9 @@ class LeaveRequestNotificationMail extends Mailable
     use Queueable, SerializesModels;
 
     public LeaveRequest $leaveRequest;
+
     public string $recipientType; // 'admin' | 'employee'
+
     public string $action;        // 'submitted' | 'approved' | 'rejected'
 
     public function __construct(LeaveRequest $leaveRequest, string $recipientType, string $action)
@@ -28,8 +30,8 @@ class LeaveRequestNotificationMail extends Mailable
     {
         $subjects = [
             'submitted' => 'New Leave Request Submitted',
-            'approved'  => 'Your Leave Request Has Been Approved',
-            'rejected'  => 'Your Leave Request Has Been Rejected',
+            'approved' => 'Your Leave Request Has Been Approved',
+            'rejected' => 'Your Leave Request Has Been Rejected',
         ];
 
         return new Envelope(
@@ -41,8 +43,8 @@ class LeaveRequestNotificationMail extends Mailable
     {
         $messages = [
             'submitted' => 'A new leave request has been submitted by an employee.',
-            'approved'  => 'Your leave request has been approved by admin.',
-            'rejected'  => 'Your leave request has been rejected by admin.',
+            'approved' => 'Your leave request has been approved by admin.',
+            'rejected' => 'Your leave request has been rejected by admin.',
         ];
 
         return new Content(

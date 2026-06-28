@@ -14,6 +14,7 @@ class PlanningCompletedMail extends Mailable
     use Queueable, SerializesModels;
 
     public Planning $planning;
+
     public string $recipientType;
 
     public function __construct(Planning $planning, string $recipientType)

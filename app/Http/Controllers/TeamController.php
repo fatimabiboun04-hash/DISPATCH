@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Team;
 use App\Models\User;
 use App\Services\AuditService;
+use App\Services\NotificationService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 
@@ -15,6 +16,7 @@ class TeamController extends Controller
     public function index()
     {
         $teams = Team::with(['users', 'leader'])->paginate(15);
+
         return $this->paginatedResponse($teams);
     }
 
@@ -80,6 +82,11 @@ class TeamController extends Controller
 
         AuditService::log('assigned_to_team', Team::class, $team->id, null, ['user_id' => $validated['user_id']]);
 
+        $user = User::find($validated['user_id']);
+        if ($user) {
+            app(NotificationService::class)->notifyTeamAssigned($user, $team);
+        }
+
         return $this->successResponse($team->load('users'), 'Employee assigned to team');
     }
 
@@ -91,6 +98,8 @@ class TeamController extends Controller
         $team->users()->detach($user->id);
 
         AuditService::log('removed_from_team', Team::class, $team->id, ['user_id' => $user->id], null);
+
+        app(NotificationService::class)->notifyTeamRemoved($user, $team);
 
         return $this->successResponse($team->load('users'), 'Employee removed from team');
     }

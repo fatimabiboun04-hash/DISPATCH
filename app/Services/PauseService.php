@@ -9,7 +9,6 @@ use App\Models\Planning;
 use App\Models\Team;
 use App\Models\User;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\DB;
 
 class PauseService
 {
@@ -19,17 +18,19 @@ class PauseService
      */
     public function createForUser(User $user, Planning $planning, string $start, string $end): Pause
     {
+        [$pauseStart, $pauseEnd] = $this->buildPauseWindow($planning, $start, $end);
+
         // Validate pause is within planning shift hours
-        $this->validateWithinShift($planning, $start, $end);
-        
+        $this->validateWithinShift($planning, $pauseStart, $pauseEnd);
+
         // Validate no overlapping pauses for this user
-        $this->validateNoOverlap($user->id, $planning->id, $start, $end);
-        
+        $this->validateNoOverlap($user->id, $planning->id, $pauseStart, $pauseEnd);
+
         return Pause::create([
             'user_id' => $user->id,
             'planning_id' => $planning->id,
-            'pause_start' => $start,
-            'pause_end' => $end,
+            'pause_start' => $pauseStart,
+            'pause_end' => $pauseEnd,
         ]);
     }
 
@@ -39,24 +40,38 @@ class PauseService
      */
     public function createForTeam(Team $team, Planning $planning, string $start, string $end): array
     {
-        $this->validateWithinShift($planning, $start, $end);
-        
+        [$pauseStart, $pauseEnd] = $this->buildPauseWindow($planning, $start, $end);
+        $this->validateWithinShift($planning, $pauseStart, $pauseEnd);
+
         $pauses = [];
-        
-        // Get all users assigned to this planning via team
+
         $users = $team->users()
-            ->whereHas('plannings', fn($q) => $q->where('id', $planning->id))
+            ->whereHas('plannings', fn ($q) => $q->where('id', $planning->id))
             ->get();
-        
+
+        $userIds = $users->pluck('id')->toArray();
+
+        $existingOverlaps = Pause::whereIn('user_id', $userIds)
+            ->where('planning_id', $planning->id)
+            ->where(function ($q) use ($pauseStart, $pauseEnd) {
+                $q->where('pause_start', '<', $pauseEnd)
+                  ->where('pause_end', '>', $pauseStart);
+            })
+            ->pluck('user_id')
+->toArray();
+
         foreach ($users as $user) {
-            try {
-                $pauses[] = $this->createForUser($user, $planning, $start, $end);
-            } catch (\Exception $e) {
-                // Skip users with conflicts, log if needed
+            if (in_array($user->id, $existingOverlaps)) {
                 continue;
             }
+            $pauses[] = Pause::create([
+                'user_id' => $user->id,
+                'planning_id' => $planning->id,
+                'pause_start' => $pauseStart,
+                'pause_end' => $pauseEnd,
+            ]);
         }
-        
+
         return $pauses;
     }
 
@@ -65,14 +80,16 @@ class PauseService
      */
     public function update(Pause $pause, string $start, string $end): Pause
     {
-        $this->validateWithinShift($pause->planning, $start, $end);
-        $this->validateNoOverlap($pause->user_id, $pause->planning_id, $start, $end, $pause->id);
-        
+        [$pauseStart, $pauseEnd] = $this->buildPauseWindow($pause->planning, $start, $end);
+
+        $this->validateWithinShift($pause->planning, $pauseStart, $pauseEnd);
+        $this->validateNoOverlap($pause->user_id, $pause->planning_id, $pauseStart, $pauseEnd, $pause->id);
+
         $pause->update([
-            'pause_start' => $start,
-            'pause_end' => $end,
+            'pause_start' => $pauseStart,
+            'pause_end' => $pauseEnd,
         ]);
-        
+
         return $pause->fresh();
     }
 
@@ -82,14 +99,14 @@ class PauseService
     public function getActiveToday(): array
     {
         $now = now();
-        
+
         return Pause::whereHas('planning', function ($query) use ($now) {
-                $query->whereDate('date', $now->toDateString());
-            })
+            $query->whereDate('date', $now->toDateString());
+        })
+            ->where('pause_end', '>', $now)
+            ->where('pause_start', '<=', $now)
             ->with(['user', 'team', 'planning.shift'])
             ->get()
-            ->filter(fn($pause) => $pause->is_active)
-            ->values()
             ->toArray();
     }
 
@@ -105,42 +122,77 @@ class PauseService
     }
 
     /**
+     * Get pauses for multiple planning IDs in a single query.
+     * Returns array grouped by planning_id.
+     */
+    public function getByPlanningBatch(array $planningIds): array
+    {
+        if (empty($planningIds)) {
+            return [];
+        }
+
+        $pauses = Pause::whereIn('planning_id', $planningIds)
+            ->with(['user', 'team'])
+            ->get()
+            ->groupBy('planning_id')
+            ->toArray();
+
+        // Ensure every requested planning_id has an entry
+        $result = [];
+        foreach ($planningIds as $id) {
+            $result[$id] = $pauses[$id] ?? [];
+        }
+
+        return $result;
+    }
+
+    /**
      * Calculate total pause minutes for a user in a planning
      * Used by HoursCalculatorService to exclude from working hours
      */
     public function getTotalPauseMinutes(int $userId, int $planningId): int
-{
-    return Pause::where('user_id', $userId)
-        ->where('planning_id', $planningId)
-        ->get()
-        ->sum(function ($pause) {
-            return Carbon::parse($pause->pause_start)
-                ->diffInMinutes(Carbon::parse($pause->pause_end));
-        });
-}
+    {
+        return (int) Pause::where('user_id', $userId)
+            ->where('planning_id', $planningId)
+            ->whereNotNull('pause_end')
+            ->get()
+            ->sum(fn (Pause $pause) => $pause->pause_start->diffInMinutes($pause->pause_end));
+    }
+
+    /**
+     * Build concrete datetimes from planning date and HH:mm inputs.
+     */
+    private function buildPauseWindow(Planning $planning, string $start, string $end): array
+    {
+        $date = $planning->date->toDateString();
+        $pauseStart = Carbon::parse($date.' '.$start);
+        $pauseEnd = Carbon::parse($date.' '.$end);
+
+        if ($pauseEnd->lessThanOrEqualTo($pauseStart)) {
+            $pauseEnd->addDay();
+        }
+
+        return [$pauseStart, $pauseEnd];
+    }
 
     /**
      * Validate pause time is within planning shift hours
      */
-    private function validateWithinShift(Planning $planning, string $start, string $end): void
+    private function validateWithinShift(Planning $planning, Carbon $pauseStart, Carbon $pauseEnd): void
     {
-        $shiftStart = Carbon::parse($planning->shift->start_time);
-        $shiftEnd = Carbon::parse($planning->shift->end_time);
-        $pauseStart = Carbon::parse($start);
-        $pauseEnd = Carbon::parse($end);
-        
+        $date = $planning->date->toDateString();
+        $shiftStart = Carbon::parse($date.' '.$planning->shift->start_time);
+        $shiftEnd = Carbon::parse($date.' '.$planning->shift->end_time);
+
         // Handle night shifts crossing midnight
         if ($shiftEnd->lessThan($shiftStart)) {
             $shiftEnd->addDay();
-            if ($pauseEnd->lessThan($pauseStart)) {
-                $pauseEnd->addDay();
-            }
         }
-        
+
         if ($pauseStart->lessThan($shiftStart) || $pauseEnd->greaterThan($shiftEnd)) {
             throw new \InvalidArgumentException('Pause must be within shift hours');
         }
-        
+
         if ($pauseEnd->lessThanOrEqualTo($pauseStart)) {
             throw new \InvalidArgumentException('Pause end must be after start');
         }
@@ -149,23 +201,19 @@ class PauseService
     /**
      * Validate no overlapping pauses for same user in same planning
      */
-    private function validateNoOverlap(int $userId, int $planningId, string $start, string $end, ?int $excludeId = null): void
+    private function validateNoOverlap(int $userId, int $planningId, Carbon $start, Carbon $end, ?int $excludeId = null): void
     {
         $query = Pause::where('user_id', $userId)
             ->where('planning_id', $planningId)
             ->where(function ($q) use ($start, $end) {
-                $q->whereBetween('pause_start', [$start, $end])
-                  ->orWhereBetween('pause_end', [$start, $end])
-                  ->orWhere(function ($sq) use ($start, $end) {
-                      $sq->where('pause_start', '<=', $start)
-                         ->where('pause_end', '>=', $end);
-                  });
+                $q->where('pause_start', '<', $end)
+                    ->where('pause_end', '>', $start);
             });
-        
+
         if ($excludeId) {
             $query->where('id', '!=', $excludeId);
         }
-        
+
         if ($query->exists()) {
             throw new \InvalidArgumentException('Overlapping pause exists for this user');
         }

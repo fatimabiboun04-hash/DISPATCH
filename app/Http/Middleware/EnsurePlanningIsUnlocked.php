@@ -3,10 +3,11 @@
 namespace App\Http\Middleware;
 
 use App\Models\Setting;
+use Carbon\Carbon;
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Symfony\Component\HttpFoundation\Response;
-use Carbon\Carbon;
 
 class EnsurePlanningIsUnlocked
 {
@@ -20,9 +21,11 @@ class EnsurePlanningIsUnlocked
 
         // Only enforce on Fridays
         if ($now->isFriday()) {
-            $lockTime = Setting::get('friday_lock_hour', ['time' => '17:00']);
+            $lockTime = Cache::remember('friday_lock_hour', 86400, function () {
+                return Setting::get('friday_lock_hour', ['time' => '17:00']);
+            });
             $lockHour = $lockTime['time'] ?? '17:00';
-            $lockDateTime = Carbon::parse($now->toDateString() . ' ' . $lockHour);
+            $lockDateTime = Carbon::parse($now->toDateString().' '.$lockHour);
 
             if ($now->greaterThanOrEqualTo($lockDateTime)) {
                 return response()->json([

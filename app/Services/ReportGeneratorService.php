@@ -29,7 +29,7 @@ class ReportGeneratorService
     {
         $data = $this->gatherReportData($report);
 
-        $html = view('reports.pdf-template', ['data' => $data, 'report' => $report])->render();
+        $html = view('emails.report.pdf-template', ['data' => $data, 'report' => $report])->render();
 
         $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadHTML($html);
         $content = $pdf->output();
@@ -43,28 +43,32 @@ class ReportGeneratorService
     {
         $data = $this->gatherReportData($report);
 
-        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet;
         $sheet = $spreadsheet->getActiveSheet();
 
         // Headers
-        $sheet->setCellValue('A1', 'Report: ' . ucfirst($report->type));
-        $sheet->setCellValue('A2', 'Period: ' . $report->start_date->format('M d, Y') . ' - ' . $report->end_date->format('M d, Y'));
-        $sheet->setCellValue('A3', 'Generated: ' . now()->format('M d, Y H:i'));
+        $sheet->setCellValue('A1', 'Report: '.ucfirst($report->type));
+        $sheet->setCellValue('A2', 'Period: '.$report->start_date->format('M d, Y').' - '.$report->end_date->format('M d, Y'));
+        $sheet->setCellValue('A3', 'Generated: '.now()->format('M d, Y H:i'));
 
         // Data rows starting from row 5
         $row = 5;
         foreach ($data as $item) {
             $col = 'A';
             foreach ($item as $value) {
-                $sheet->setCellValue($col . $row, $value);
+                $sheet->setCellValue($col.$row, $value);
                 $col++;
             }
             $row++;
         }
 
         $writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
-        $tempPath = storage_path('app/' . $filename);
+
+        $tempPath = tempnam(sys_get_temp_dir(), 'report_').'.xlsx';
         $writer->save($tempPath);
+
+        Storage::put($filename, file_get_contents($tempPath));
+        unlink($tempPath);
 
         return $filename;
     }
@@ -87,7 +91,7 @@ class ReportGeneratorService
 
     protected function gatherWeeklyData(Carbon $start, Carbon $end): array
     {
-        $plannings = \App\Models\Planning::with(['user', 'shift'])
+        $plannings = \App\Models\Planning::with(['user', 'shift', 'team'])
             ->whereBetween('date', [$start, $end])
             ->get();
 

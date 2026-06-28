@@ -19,6 +19,8 @@ class Shift extends Model
         'is_active',
     ];
 
+    protected $appends = [];
+
     protected $casts = [
         'start_time' => 'datetime:H:i',
         'end_time' => 'datetime:H:i',
@@ -31,19 +33,24 @@ class Shift extends Model
         return $this->hasMany(Planning::class);
     }
 
+    public function skills()
+    {
+        return $this->belongsToMany(Skill::class, 'shift_skill');
+    }
+
     /**
      * Calculate shift duration in minutes (excluding break).
      */
     public function getDurationMinutesAttribute(): int
     {
-        $start = \Carbon\Carbon::parse($this->start_time);
-        $end = \Carbon\Carbon::parse($this->end_time);
-        
+        $start = $this->start_time;
+        $end = $this->end_time;
+
         // Handle night shifts crossing midnight
         if ($end->lessThan($start)) {
-            $end->addDay();
+            $end = $end->copy()->addDay();
         }
-        
+
         return $start->diffInMinutes($end) - $this->break_minutes;
     }
 

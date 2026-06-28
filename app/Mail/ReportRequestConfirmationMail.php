@@ -23,7 +23,7 @@ class ReportRequestConfirmationMail extends Mailable
     public function envelope(): Envelope
     {
         return new Envelope(
-            subject: 'Report Request Received - #' . $this->report->id,
+            subject: 'Report Request Received - #'.$this->report->id,
         );
     }
 
@@ -34,7 +34,7 @@ class ReportRequestConfirmationMail extends Mailable
             with: [
                 'report' => $this->report,
                 'type' => ucfirst($this->report->type),
-                'dateRange' => $this->report->start_date->format('M d, Y') . ' - ' . $this->report->end_date->format('M d, Y'),
+                'dateRange' => $this->report->start_date->format('M d, Y').' - '.$this->report->end_date->format('M d, Y'),
                 'fileType' => strtoupper($this->report->file_type),
             ],
         );

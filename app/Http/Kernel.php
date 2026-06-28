@@ -23,17 +23,6 @@ class Kernel extends HttpKernel
         \Illuminate\Foundation\Http\Middleware\ConvertEmptyStringsToNull::class,
     ];
 
-
-    // app/Http/Kernel.php
-
-protected $routeMiddleware = [
-    // ... existing middleware ...
-    
-    'active.user' => \App\Http\Middleware\EnsureUserIsActive::class,
-    'role' => \App\Http\Middleware\EnsureUserHasRole::class,
-    'planning.locked' => \App\Http\Middleware\EnsurePlanningIsUnlocked::class,
-];
-
     /**
      * The application's route middleware groups.
      *
@@ -75,5 +64,8 @@ protected $routeMiddleware = [
         'signed' => \App\Http\Middleware\ValidateSignature::class,
         'throttle' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
         'verified' => \Illuminate\Auth\Middleware\EnsureEmailIsVerified::class,
+        'active.user' => \App\Http\Middleware\EnsureUserIsActive::class,
+        'role' => \App\Http\Middleware\EnsureUserHasRole::class,
+        'planning.locked' => \App\Http\Middleware\EnsurePlanningIsUnlocked::class,
     ];
 }

@@ -17,4 +17,9 @@ class Skill extends Model
             ->withPivot('level', 'certified_at')
             ->withTimestamps();
     }
+
+    public function shifts()
+    {
+        return $this->belongsToMany(Shift::class, 'shift_skill');
+    }
 }
