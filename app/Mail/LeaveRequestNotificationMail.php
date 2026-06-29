@@ -50,7 +50,7 @@ class LeaveRequestNotificationMail extends Mailable
         return new Content(
             view: 'emails.leave.notification',
             with: [
-                'message' => $messages[$this->action],
+                'notificationMessage' => $messages[$this->action],
                 'leaveRequest' => $this->leaveRequest,
                 'employee' => $this->leaveRequest->user,
                 'approver' => $this->leaveRequest->approver,

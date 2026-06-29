@@ -33,6 +33,16 @@ class EmployeeController extends Controller
             ->when($request->status, function ($query, $status) {
                 $query->where('status', $status);
             })
+        // filter by rating score
+            ->when($request->rating, function ($query, $rating) {
+                $weekNumber = now()->isoWeek();
+                $year = now()->isoWeekYear();
+                $query->whereHas('ratings', fn ($q) => $q
+                    ->where('week_number', $weekNumber)
+                    ->where('year', $year)
+                    ->where('score', $rating)
+                );
+            })
             ->paginate(15);
 
         return $this->paginatedResponse($employees);
@@ -191,11 +201,11 @@ class EmployeeController extends Controller
             ->get()
             ->map(fn ($r) => [
                 'type' => 'rating',
-                'icon' => $r->type === 'excellent' ? '⭐' : '🚩',
-                'title' => $r->type === 'excellent' ? 'Rated Excellent' : 'Warning Issued',
-                'description' => $r->reason ?? 'No reason provided',
+                'icon' => $r->score ? '★' : '—',
+                'title' => $r->score ? "Rated {$r->score}/5" : 'Rating removed',
+                'description' => $r->comment ?? ($r->reason ?? ''),
                 'date' => $r->created_at,
-                'meta' => ['type' => $r->type, 'week' => $r->week_number, 'year' => $r->year],
+                'meta' => ['score' => $r->score, 'type' => $r->type, 'week' => $r->week_number, 'year' => $r->year],
             ]);
 
         $leaves = \App\Models\LeaveRequest::where('user_id', $user->id)

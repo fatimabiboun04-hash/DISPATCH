@@ -34,7 +34,7 @@ class PlanningController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Planning::with(['user', 'shift', 'team', 'creator']);
+        $query = Planning::with(['user', 'shift.skills', 'team', 'creator']);
 
         if ($request->has('week_number') && $request->has('year')) {
             $query->where('week_number', $request->week_number)
@@ -62,6 +62,19 @@ class PlanningController extends Controller
         //  locked status filter for planning history view
         if ($request->has('is_locked')) {
             $query->where('is_locked', filter_var($request->is_locked, FILTER_VALIDATE_BOOLEAN));
+        }
+
+        //  skill filter — planning where shift has this skill
+        if ($request->has('skill_id')) {
+            $query->whereHas('shift.skills', fn ($q) => $q->where('skills.id', $request->skill_id));
+        }
+
+        //  text search across user name and shift name
+        if ($search = $request->search) {
+            $query->where(function ($q) use ($search) {
+                $q->whereHas('user', fn ($q) => $q->where('name', 'like', "%{$search}%"))
+                  ->orWhereHas('shift', fn ($q) => $q->where('name', 'like', "%{$search}%"));
+            });
         }
 
         $plannings = $query->paginate(50);
@@ -388,6 +401,89 @@ class PlanningController extends Controller
     }
 
     /**
+     * Get employee context info for planning (weekly hours, rating, skills, leave, conflicts).
+     * Used by the frontend EmployeeInfoPanel.
+     */
+    public function employeeInfo(Request $request, User $employee)
+    {
+        $weekNumber = $request->week_number ?? now()->isoWeek();
+        $year = $request->year ?? now()->isoWeekYear();
+
+        $employee->loadMissing(['skills', 'teams']);
+
+        // Current hours
+        $currentHours = $this->planningService->getHoursCalculator()->getWeeklyHours($employee, $weekNumber, $year);
+        $limit = $employee->weekly_hours_limit ?? 44;
+
+        // Latest rating
+        $latestRating = $employee->ratings()->latest('created_at')->first();
+
+        // Current week assignments
+        $assignments = Planning::where('user_id', $employee->id)
+            ->where('week_number', $weekNumber)
+            ->where('year', $year)
+            ->with(['shift', 'team'])
+            ->orderBy('date')
+            ->get();
+
+        // Leave status for the week
+        $weekStart = now()->setISODate($year, $weekNumber)->startOfWeek();
+        $weekEnd = $weekStart->copy()->endOfWeek();
+        $leave = $employee->leaveRequests()
+            ->where('status', 'approved')
+            ->where('start_date', '<=', $weekEnd->toDateString())
+            ->where('end_date', '>=', $weekStart->toDateString())
+            ->get(['id', 'type', 'start_date', 'end_date', 'reason']);
+
+        return $this->successResponse([
+            'employee' => [
+                'id' => $employee->id,
+                'name' => $employee->name,
+                'initials' => $employee->initials,
+                'avatar_url' => $employee->avatar_url,
+            ],
+            'weekly_hours' => [
+                'current' => round($currentHours, 1),
+                'limit' => $limit,
+                'remaining' => round(max(0, $limit - $currentHours), 1),
+                'is_overtime' => $currentHours > $limit,
+                'is_under_hours' => $currentHours < 32,
+            ],
+            'rating' => $latestRating ? [
+                'score' => $latestRating->score,
+                'label' => $latestRating->score ? \App\Models\Rating::scoreLabel($latestRating->score) : null,
+            ] : null,
+            'skills' => $employee->skills->map(fn ($s) => [
+                'id' => $s->id,
+                'name' => $s->name,
+                'level' => $s->pivot->level ?? null,
+            ]),
+            'teams' => $employee->teams->map(fn ($t) => [
+                'id' => $t->id,
+                'name' => $t->name,
+                'color' => $t->color,
+            ]),
+            'assignments' => $assignments->map(fn ($p) => [
+                'id' => $p->id,
+                'date' => $p->date->toDateString(),
+                'shift_name' => $p->shift?->name,
+                'shift_type' => $p->shift?->type,
+                'start_time' => $p->shift?->start_time?->format('H:i'),
+                'end_time' => $p->shift?->end_time?->format('H:i'),
+                'team_name' => $p->team?->name,
+                'is_locked' => $p->is_locked,
+            ]),
+            'leave' => $leave->map(fn ($l) => [
+                'id' => $l->id,
+                'type' => $l->type,
+                'start_date' => $l->start_date,
+                'end_date' => $l->end_date,
+                'reason' => $l->reason,
+            ]),
+        ], 'Employee info retrieved');
+    }
+
+    /**
      * Admin: get a specific employee's planning (for profile tabs).
      * Not subject to planning.locked middleware.
      */
@@ -476,5 +572,29 @@ class PlanningController extends Controller
             'conflict_count' => count($conflicts),
             'valid' => empty($conflicts),
         ], 'Batch validation completed');
+    }
+
+    public function coverage(Request $request)
+    {
+        $validated = $request->validate([
+            'start_date' => 'required|date',
+            'end_date' => 'required|date|after_or_equal:start_date',
+        ]);
+
+        $coverage = $this->planningService->getCoverage($validated['start_date'], $validated['end_date']);
+
+        return $this->successResponse($coverage, 'Coverage retrieved');
+    }
+
+    public function quality(Request $request)
+    {
+        $validated = $request->validate([
+            'week_number' => 'required|integer|between:1,53',
+            'year' => 'required|integer|min:2020',
+        ]);
+
+        $quality = $this->planningService->getQualityScore($validated['week_number'], $validated['year']);
+
+        return $this->successResponse($quality, 'Quality score computed');
     }
 }

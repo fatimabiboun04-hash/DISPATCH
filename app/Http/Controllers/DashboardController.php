@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\LeaveRequest;
 use App\Models\Planning;
 use App\Models\Pointage;
+use App\Models\Rating;
 use App\Models\User;
 use App\Models\WeeklySnapshot;
 use App\Services\HoursCalculatorService;
@@ -81,6 +82,15 @@ class DashboardController extends Controller
             // Weekly hours aggregation via HoursCalculatorService
             $weeklyHoursData = $this->getWeeklyHoursAggregate($weekNumber, $year);
 
+            // Rating stats
+            $currentRatings = Rating::where('week_number', $weekNumber)
+                ->where('year', $year)
+                ->get();
+            $ratedCount = $currentRatings->count();
+            $avgScore = $currentRatings->avg('score');
+            $fiveStarCount = $currentRatings->where('score', 5)->count();
+            $needsImprovementCount = $currentRatings->where('score', '<=', 2)->count();
+
             return [
                 'coverage' => [
                     'percentage' => $coverage,
@@ -100,6 +110,12 @@ class DashboardController extends Controller
                 'weekly_hours' => $weeklyHoursData,
                 'overtimes' => $weeklyHoursData['overtime_count'],
                 'weekly_completion' => $weeklyHoursData['avg_completion'],
+                'ratings' => [
+                    'total_rated' => $ratedCount,
+                    'average_score' => $avgScore ? round($avgScore, 1) : null,
+                    'five_star_count' => $fiveStarCount,
+                    'needs_improvement_count' => $needsImprovementCount,
+                ],
             ];
         });
     }

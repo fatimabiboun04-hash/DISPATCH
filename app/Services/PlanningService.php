@@ -19,6 +19,29 @@ use Illuminate\Support\Str;
 
 class PlanningService
 {
+    // Scoring weights
+    const SCORE_BASE                = 50;
+    const SCORE_RATING              = 20;
+    const SCORE_HOURS_PROXIMITY     = 15;
+    const SCORE_SKILL_MATCH         = 25;
+    const SCORE_WORKLOAD_BALANCE    = 10;
+    const SCORE_REST_PERIOD         = 10;
+    const SCORE_TEAM_COMPATIBILITY  = 5;
+    const SCORE_CONSECUTIVE_DAYS    = 5;
+    const SCORE_NIGHT_SHIFT_CONSEC  = 5;
+    const SCORE_REPLACEMENT_FREQ    = 5;
+
+    // Thresholds
+    const REST_MINIMUM_MINUTES      = 660;  // 11h
+    const REST_TIGHT_MINUTES        = 780;  // 13h
+    const WEEKLY_LIMIT_DEFAULT      = 44;
+    const UNDER_HOURS_THRESHOLD     = 32;
+    const IDEAL_HOURS_MIN           = 32;
+    const IDEAL_HOURS_MAX           = 38;
+    const MAX_CONSECUTIVE_DAYS      = 5;
+    const MAX_NIGHT_SHIFT_CONSEC    = 2;
+    const SUGGESTION_LIMIT          = 5;
+
     protected HoursCalculatorService $hoursCalculator;
 
     public function __construct(HoursCalculatorService $hoursCalculator)
@@ -27,7 +50,349 @@ class PlanningService
     }
 
     // ─────────────────────────────────────────────────────────
-    //  EXISTING METHODS (unchanged, enhanced where noted)
+    //  SCORING ENGINE
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * Centralized scoring for employee suggestion ranking.
+     * Returns score (0-100) + breakdown + explainable reasons.
+     */
+    protected function computeSuggestionScore(
+        User $employee,
+        Shift $shift,
+        float $currentHours,
+        ?object $latestRating,
+        array $recentAssignments,
+        float $avgRecent,
+        ?int $teamId,
+        array $consecutiveData,
+        string $dateStr,
+        bool $hasLeave,
+        ?Planning $prevDayPlanning = null,
+    ): array {
+        $score = self::SCORE_BASE;
+        $breakdown = [];
+        $reasons = [];
+
+        // 1. Rating (weight: 20) — proportional to score (1-5)
+        $ratingScore = 0;
+        if ($latestRating && $latestRating->score) {
+            // Map score 1-5 to -20..+20 linearly
+            $ratingScore = (int) round((($latestRating->score - 3) / 2) * self::SCORE_RATING);
+            $reasons[] = Rating::scoreLabel($latestRating->score) . ' (' . $latestRating->score . '/5)';
+        }
+        $score += $ratingScore;
+        $breakdown['rating'] = $ratingScore;
+
+        // 2. Hours proximity (weight: 15)
+        $hoursScore = 0;
+        if ($currentHours >= self::IDEAL_HOURS_MIN && $currentHours <= self::IDEAL_HOURS_MAX) {
+            $hoursScore = self::SCORE_HOURS_PROXIMITY;
+            $reasons[] = sprintf('Ideal hours (%.0fh this week)', $currentHours);
+        } elseif ($currentHours < self::UNDER_HOURS_THRESHOLD) {
+            $hoursScore = round(self::SCORE_HOURS_PROXIMITY * 0.66);
+            $reasons[] = sprintf('Under hours (%.0fh this week)', $currentHours);
+        } elseif ($currentHours < self::WEEKLY_LIMIT_DEFAULT) {
+            $hoursScore = round(self::SCORE_HOURS_PROXIMITY * 0.33);
+            $reasons[] = sprintf('Near limit (%.0fh this week)', $currentHours);
+        }
+        $score += $hoursScore;
+        $breakdown['hours_proximity'] = $hoursScore;
+
+        // 3. Skill match (weight: 25)
+        $skillScore = 0;
+        if ($shift->skills->isNotEmpty()) {
+            $employeeSkillIds = $employee->skills->pluck('id')->toArray();
+            $requiredSkillIds = $shift->skills->pluck('id')->toArray();
+            $matchedCount = count(array_intersect($employeeSkillIds, $requiredSkillIds));
+            $ratio = count($requiredSkillIds) > 0 ? $matchedCount / count($requiredSkillIds) : 0;
+            $skillScore = round($ratio * self::SCORE_SKILL_MATCH);
+            $score += $skillScore;
+            $reasons[] = $ratio >= 1
+                ? 'All required skills matched'
+                : sprintf('%d/%d required skills', $matchedCount, count($requiredSkillIds));
+        }
+        $breakdown['skill_match'] = $skillScore;
+
+        // 4. Workload balance (weight: 10)
+        $workloadScore = 0;
+        $uid = $employee->id;
+        $recentCount = $recentAssignments[$uid] ?? 0;
+        if ($recentCount <= $avgRecent) {
+            $workloadScore = self::SCORE_WORKLOAD_BALANCE;
+            $reasons[] = 'Balanced workload';
+        } elseif ($recentCount <= $avgRecent * 1.5) {
+            $workloadScore = round(self::SCORE_WORKLOAD_BALANCE * 0.5);
+            $reasons[] = 'Moderate recent workload';
+        } else {
+            $reasons[] = 'Heavy recent workload';
+        }
+        $score += $workloadScore;
+        $breakdown['workload_balance'] = $workloadScore;
+
+        // 5. Rest period (weight: 10) — uses pre-loaded data
+        $restScore = 0;
+        if ($prevDayPlanning && $prevDayPlanning->shift) {
+            $prevEnd = Carbon::parse($prevDayPlanning->date->toDateString().' '.$prevDayPlanning->shift->end_time->format('H:i:s'));
+            if ($prevEnd->lessThan(Carbon::parse($prevDayPlanning->date->toDateString().' '.$prevDayPlanning->shift->start_time->format('H:i:s')))) {
+                $prevEnd->addDay();
+            }
+            $newStart = Carbon::parse($dateStr.' '.$shift->start_time->format('H:i:s'));
+            $restMinutes = $prevEnd->diffInMinutes($newStart);
+            if ($restMinutes < self::REST_MINIMUM_MINUTES) {
+                $restScore = -(self::SCORE_REST_PERIOD * 3);
+                $reasons[] = sprintf('Rest period violation (%dh < 11h minimum)', round($restMinutes / 60));
+            } elseif ($restMinutes < self::REST_TIGHT_MINUTES) {
+                $restScore = -self::SCORE_REST_PERIOD;
+                $reasons[] = sprintf('Rest period tight (%dh)', round($restMinutes / 60));
+            } else {
+                $restScore = self::SCORE_REST_PERIOD;
+                $reasons[] = sprintf('Good rest period (%dh)', round($restMinutes / 60));
+            }
+        } else {
+            $restScore = round(self::SCORE_REST_PERIOD * 0.5);
+            $reasons[] = 'No previous day assignment (flexible)';
+        }
+        $score += $restScore;
+        $breakdown['rest_period'] = $restScore;
+
+        // 6. Team compatibility (weight: 5)
+        $teamScore = 0;
+        if ($teamId && $employee->teams()->where('teams.id', $teamId)->exists()) {
+            $teamScore = self::SCORE_TEAM_COMPATIBILITY;
+            $reasons[] = 'Same team';
+        }
+        $score += $teamScore;
+        $breakdown['team_compatibility'] = $teamScore;
+
+        // 7. Consecutive working days (weight: 5)
+        $consecScore = 0;
+        $consecDays = $consecutiveData['days'] ?? 0;
+        if ($consecDays > self::MAX_CONSECUTIVE_DAYS) {
+            $consecScore = -self::SCORE_CONSECUTIVE_DAYS;
+            $reasons[] = sprintf('%d consecutive days (max %d)', $consecDays, self::MAX_CONSECUTIVE_DAYS);
+        } elseif ($consecDays <= 2) {
+            $consecScore = self::SCORE_CONSECUTIVE_DAYS;
+            $reasons[] = 'Low consecutive days';
+        }
+        $score += $consecScore;
+        $breakdown['consecutive_days'] = $consecScore;
+
+        // 8. Consecutive night shifts (weight: 5)
+        $nightScore = 0;
+        $nightConsec = $consecutiveData['night_shifts'] ?? 0;
+        if ($nightConsec > self::MAX_NIGHT_SHIFT_CONSEC) {
+            $nightScore = -self::SCORE_NIGHT_SHIFT_CONSEC;
+            $reasons[] = sprintf('%d consecutive night shifts (max %d)', $nightConsec, self::MAX_NIGHT_SHIFT_CONSEC);
+        } elseif ($nightConsec > 0) {
+            $reasons[] = sprintf('%d night shift(s) this week', $nightConsec);
+        }
+        $score += $nightScore;
+        $breakdown['night_shift_consecutive'] = $nightScore;
+
+        // 9. Replacement frequency (weight: 5)
+        $replacementScore = 0;
+        $totalPlannings = $recentAssignments[$uid] ?? 0;
+        if ($totalPlannings > 0 && $avgRecent > 0) {
+            $ratio = $totalPlannings / max(1, $avgRecent);
+            if ($ratio <= 0.7) {
+                $replacementScore = self::SCORE_REPLACEMENT_FREQ;
+                $reasons[] = 'Low assignment frequency (available)';
+            } elseif ($ratio >= 1.3) {
+                $replacementScore = -self::SCORE_REPLACEMENT_FREQ;
+                $reasons[] = 'High assignment frequency';
+            }
+        }
+        $score += $replacementScore;
+        $breakdown['replacement_frequency'] = $replacementScore;
+
+        // Cap at 0-100
+        $score = max(0, min(100, $score));
+
+        return [
+            'score' => $score,
+            'breakdown' => $breakdown,
+            'reasons' => $reasons,
+        ];
+    }
+
+    /**
+     * Compute consecutive work data for an employee.
+     */
+    protected function computeConsecutiveData(Collection $weekPlannings, Shift $targetShift, string $dateStr): array
+    {
+        $targetDate = Carbon::parse($dateStr);
+        $days = 0;
+        $nightShifts = 0;
+
+        $checkDate = $targetDate->copy()->subDay();
+        while ($weekPlannings->first(fn ($p) => $p->date === $checkDate->toDateString())) {
+            $days++;
+            $checkDate->subDay();
+        }
+
+        $isNight = fn ($shift) => $shift && (
+            $shift->end_time >= '22:00' || $shift->start_time <= '06:00'
+        );
+        $nightShifts = $weekPlannings->filter(fn ($p) => $isNight($p->shift))->count();
+        if ($isNight($targetShift)) {
+            $nightShifts++;
+        }
+
+        return ['days' => $days, 'night_shifts' => $nightShifts];
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  COVERAGE
+    // ─────────────────────────────────────────────────────────
+
+    public function getCoverage(string $startDate, string $endDate): array
+    {
+        $shifts = Shift::where('is_active', true)->get();
+        $plannings = Planning::whereBetween('date', [$startDate, $endDate])
+            ->with('shift')
+            ->get()
+            ->groupBy(['date', 'shift_id']);
+
+        $coverage = [];
+        $period = Carbon::parse($startDate);
+        $end = Carbon::parse($endDate);
+
+        while ($period <= $end) {
+            $dateStr = $period->toDateString();
+            $dayCoverage = [];
+
+            foreach ($shifts as $shift) {
+                $count = isset($plannings[$dateStr][$shift->id])
+                    ? count($plannings[$dateStr][$shift->id])
+                    : 0;
+
+                $dayCoverage[] = [
+                    'shift_id' => $shift->id,
+                    'shift_name' => $shift->name,
+                    'shift_type' => $shift->type,
+                    'start_time' => $shift->start_time,
+                    'end_time' => $shift->end_time,
+                    'count' => $count,
+                    'status' => $count === 0 ? 'empty' : ($count <= 2 ? 'low' : 'adequate'),
+                ];
+            }
+
+            $coverage[] = [
+                'date' => $dateStr,
+                'day_name' => $period->locale('fr')->dayName,
+                'shifts' => $dayCoverage,
+            ];
+
+            $period->addDay();
+        }
+
+        return $coverage;
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  PLANNING QUALITY SCORE
+    // ─────────────────────────────────────────────────────────
+
+    public function getQualityScore(int $weekNumber, int $year): array
+    {
+        $startOfWeek = now()->setISODate($year, $weekNumber)->startOfWeek();
+        $endOfWeek = $startOfWeek->copy()->endOfWeek();
+
+        $plannings = Planning::where('week_number', $weekNumber)
+            ->where('year', $year)
+            ->with(['shift', 'user'])
+            ->get();
+
+        if ($plannings->isEmpty()) {
+            return ['score' => 0, 'factors' => [], 'grade' => 'N/A'];
+        }
+
+        $totalShifts = $plannings->count();
+        $users = $plannings->groupBy('user_id');
+
+        $activeShifts = Shift::where('is_active', true)->count() ?: 1;
+        $maxAssignments = $activeShifts * 7;
+        $coverageRatio = min(1, $totalShifts / max(1, $maxAssignments));
+        $coverageScore = round($coverageRatio * 30);
+
+        $userHours = [];
+        foreach ($users as $userId => $userPlannings) {
+            $total = 0;
+            foreach ($userPlannings as $p) {
+                $total += $p->shift?->duration_hours ?? 0;
+            }
+            $userHours[$userId] = $total;
+        }
+        $hoursBalanceScore = 0;
+        if (!empty($userHours)) {
+            $avgHours = array_sum($userHours) / count($userHours);
+            $variance = 0;
+            foreach ($userHours as $h) {
+                $variance += abs($h - $avgHours);
+            }
+            $avgVariance = $variance / count($userHours);
+            $hoursBalanceScore = round(max(0, 25 - ($avgVariance * 2)));
+        }
+
+        $overtimeCount = 0;
+        foreach ($users as $userId => $userPlannings) {
+            $total = 0;
+            foreach ($userPlannings as $p) {
+                $total += $p->shift?->duration_hours ?? 0;
+            }
+            if ($total > self::WEEKLY_LIMIT_DEFAULT) $overtimeCount++;
+        }
+        $overtimeRatio = $users->count() > 0 ? $overtimeCount / $users->count() : 0;
+        $overtimeScore = round(max(0, 20 - ($overtimeRatio * 40)));
+
+        $restViolations = 0;
+        $restChecks = 0;
+        foreach ($users as $userId => $userPlannings) {
+            $sorted = $userPlannings->sortBy('date');
+            $prev = null;
+            foreach ($sorted as $p) {
+                if ($prev && $prev->shift) {
+                    $prevEnd = Carbon::parse($prev->date->toDateString().' '.$prev->shift->end_time->format('H:i'));
+                    $newStart = Carbon::parse($p->date->toDateString().' '.$p->shift->start_time->format('H:i'));
+                    if ($prevEnd->greaterThan($newStart)) $prevEnd->addDay();
+                    $restMinutes = $prevEnd->diffInMinutes($newStart);
+                    $restChecks++;
+                    if ($restMinutes < self::REST_MINIMUM_MINUTES) $restViolations++;
+                }
+                $prev = $p;
+            }
+        }
+        $restComplianceRatio = $restChecks > 0 ? 1 - ($restViolations / $restChecks) : 1;
+        $restScore = round($restComplianceRatio * 15);
+
+        $lockedCount = $plannings->where('is_locked', true)->count();
+        $conflictScore = round(($lockedCount / max(1, $totalShifts)) * 10);
+
+        $totalScore = $coverageScore + $hoursBalanceScore + $overtimeScore + $restScore + $conflictScore;
+
+        $grade = $totalScore >= 90 ? 'A' : ($totalScore >= 75 ? 'B' : ($totalScore >= 60 ? 'C' : 'D'));
+
+        return [
+            'score' => min(100, $totalScore),
+            'grade' => $grade,
+            'factors' => [
+                'coverage' => ['score' => $coverageScore, 'max' => 30, 'label' => 'Couverture'],
+                'hours_balance' => ['score' => $hoursBalanceScore, 'max' => 25, 'label' => 'Équilibre des heures'],
+                'overtime' => ['score' => $overtimeScore, 'max' => 20, 'label' => 'Heures supplémentaires'],
+                'rest_compliance' => ['score' => $restScore, 'max' => 15, 'label' => 'Respect du repos'],
+                'conflicts' => ['score' => $conflictScore, 'max' => 10, 'label' => 'Conflits'],
+            ],
+            'stats' => [
+                'total_assignments' => $totalShifts,
+                'employees_assigned' => $users->count(),
+                'overtime_employees' => $overtimeCount,
+                'rest_violations' => $restViolations,
+                'locked_count' => $lockedCount,
+            ],
+        ];
+    }
+
     // ─────────────────────────────────────────────────────────
 
     public function validateAssignment(User $user, Shift $shift, Carbon $date, ?int $excludePlanningId = null): array
@@ -60,23 +425,43 @@ class PlanningService
 
         if ($overlappingPlannings->isNotEmpty()) {
             $conflicting = $overlappingPlannings->first();
-            $conflictingShift = $conflicting->shift->name;
+            $conflictingShift = $conflicting->shift;
             $errors[] = [
-                'message' => "Employee already assigned to a shift that overlaps with this time period (conflicts with {$conflictingShift}).",
                 'type' => 'overlap',
+                'severity' => 'error',
+                'message' => "Employee already assigned to a shift that overlaps with this time period (conflicts with {$conflictingShift->name}).",
                 'planning_id' => $conflicting->id,
+                'conflict_details' => [
+                    'planning_id' => $conflicting->id,
+                    'shift_name' => $conflictingShift->name,
+                    'shift_type' => $conflictingShift->type,
+                    'start_time' => $conflictingShift->start_time->format('H:i'),
+                    'end_time' => $conflictingShift->end_time->format('H:i'),
+                    'date' => $date->toDateString(),
+                ],
             ];
         }
 
         // 2. Approved leave
-        $onLeave = LeaveRequest::where('user_id', $user->id)
+        $leaveRecord = LeaveRequest::where('user_id', $user->id)
             ->where('status', 'approved')
             ->where('start_date', '<=', $date->toDateString())
             ->where('end_date', '>=', $date->toDateString())
-            ->exists();
+            ->first();
 
-        if ($onLeave) {
-            $errors[] = 'Employee is on approved leave for this date.';
+        if ($leaveRecord) {
+            $errors[] = [
+                'type' => 'leave_conflict',
+                'severity' => 'error',
+                'message' => "Employee is on approved leave ({$leaveRecord->type}) from {$leaveRecord->start_date} to {$leaveRecord->end_date}.",
+                'conflict_details' => [
+                    'leave_id' => $leaveRecord->id,
+                    'type' => $leaveRecord->type,
+                    'start_date' => $leaveRecord->start_date,
+                    'end_date' => $leaveRecord->end_date,
+                    'reason' => $leaveRecord->reason,
+                ],
+            ];
         }
 
         // 3. Rest period (min 11h)
@@ -93,8 +478,19 @@ class PlanningService
             }
             $newStart = Carbon::parse($date->toDateString().' '.$shift->start_time->format('H:i:s'));
             $restMinutes = $prevEnd->diffInMinutes($newStart);
-            if ($restMinutes < 660) {
-                $errors[] = "Insufficient rest period ({$restMinutes}min). Minimum 11 hours required between shifts.";
+            if ($restMinutes < self::REST_MINIMUM_MINUTES) {
+                $errors[] = [
+                    'type' => 'rest_period_violation',
+                    'severity' => 'error',
+                    'message' => "Insufficient rest period ({$restMinutes}min). Minimum 11 hours required between shifts.",
+                    'conflict_details' => [
+                        'rest_minutes' => $restMinutes,
+                        'required_minutes' => self::REST_MINIMUM_MINUTES,
+                        'prev_shift_name' => $prevShift->shift->name,
+                        'prev_shift_end' => $prevShift->shift->end_time->format('H:i'),
+                        'new_shift_start' => $shift->start_time->format('H:i'),
+                    ],
+                ];
             }
         }
 
@@ -102,8 +498,23 @@ class PlanningService
         $weekNumber = $date->isoWeek();
         $year = $date->isoWeekYear();
 
+        $currentHours = $this->hoursCalculator->getWeeklyHours($user, $weekNumber, $year);
+        $limit = $user->weekly_hours_limit ?? self::WEEKLY_LIMIT_DEFAULT;
+        $afterAssignment = $currentHours + $shift->duration_hours;
+
         if ($this->hoursCalculator->wouldExceedLimit($user, $weekNumber, $year, $shift->duration_hours)) {
-            $errors[] = 'Assignment would exceed weekly hours limit ('.($user->weekly_hours_limit ?? 44).'h).';
+            $errors[] = [
+                'type' => 'weekly_hours_exceeded',
+                'severity' => 'error',
+                'message' => 'Assignment would exceed weekly hours limit (' . $limit . 'h).',
+                'conflict_details' => [
+                    'current_hours' => round($currentHours, 1),
+                    'assignment_hours' => $shift->duration_hours,
+                    'limit' => $limit,
+                    'after_assignment' => round($afterAssignment, 1),
+                    'difference' => round($afterAssignment - $limit, 1),
+                ],
+            ];
         }
 
         return [
@@ -175,6 +586,26 @@ class PlanningService
 
             $suggestions = [];
             $limit = $shift->duration_hours;
+            $avgRecent = $employees->count() > 0
+                ? array_sum($recentAssignments) / max(1, count($recentAssignments))
+                : 0;
+
+            // Batch pre-load consecutive day data for all employees
+            $prevDate = Carbon::parse($dateStr)->subDay()->toDateString();
+            $prevPlannings = Planning::whereIn('user_id', $employees->pluck('id'))
+                ->where('date', $prevDate)
+                ->with('shift')
+                ->get()
+                ->keyBy('user_id');
+
+            // Pre-load current week assignments for consecutive day tracking
+            $weekStart = Carbon::parse($dateStr)->startOfWeek();
+            $weekEnd = Carbon::parse($dateStr)->endOfWeek();
+            $allWeekPlannings = Planning::whereIn('user_id', $employees->pluck('id'))
+                ->whereBetween('date', [$weekStart, $weekEnd])
+                ->with('shift')
+                ->get()
+                ->groupBy('user_id');
 
             foreach ($employees as $employee) {
                 $uid = $employee->id;
@@ -183,76 +614,33 @@ class PlanningService
                 if (isset($onLeaveSet[$uid])) continue;
 
                 $currentHours = $hoursBatch[$uid] ?? 0;
-                $hoursLimit = $employee->weekly_hours_limit;
+                $hoursLimit = $employee->weekly_hours_limit ?? self::WEEKLY_LIMIT_DEFAULT;
                 if ($hoursLimit !== null && ($currentHours + $limit) > $hoursLimit) continue;
 
-                // ── Weighted scoring ─────────────────────────
-                $score = 50; // Base
-
-                // 1. Rating (weight: 20)
                 $latestRating = $employee->ratings->sortByDesc('created_at')->first();
-                if ($latestRating) {
-                    $score += $latestRating->type === 'excellent' ? 20 : -20;
-                }
+                $prevDayPlanning = $prevPlannings->get($uid);
+                $employeeWeekPlannings = $allWeekPlannings->get($uid, collect());
 
-                // 2. Hours proximity (weight: 15)
-                if ($currentHours >= 32 && $currentHours <= 38) {
-                    $score += 15;
-                } elseif ($currentHours < 32) {
-                    $score += 10;
-                } elseif ($currentHours > 38 && $currentHours < 44) {
-                    $score += 5; // Near limit but still available
-                }
+                // Compute consecutive day data
+                $consecutiveData = $this->computeConsecutiveData($employeeWeekPlannings, $shift, $dateStr);
 
-                // 3. Skill match (weight: 25)
-                if ($shift->skills->isNotEmpty()) {
-                    $employeeSkillIds = $employee->skills->pluck('id')->toArray();
-                    $requiredSkillIds = $shift->skills->pluck('id')->toArray();
-                    $matchedCount = count(array_intersect($employeeSkillIds, $requiredSkillIds));
-                    $ratio = $matchedCount / count($requiredSkillIds);
-                    $score += round($ratio * 25);
-                }
+                $result = $this->computeSuggestionScore(
+                    employee: $employee,
+                    shift: $shift,
+                    currentHours: $currentHours,
+                    latestRating: $latestRating,
+                    recentAssignments: $recentAssignments,
+                    avgRecent: $avgRecent,
+                    teamId: $teamId,
+                    consecutiveData: $consecutiveData,
+                    dateStr: $dateStr,
+                    hasLeave: isset($onLeaveSet[$uid]),
+                    prevDayPlanning: $prevDayPlanning,
+                );
 
-                // 4. Workload balance — prefer employees with fewer recent assignments (weight: 15)
-                $recentCount = $recentAssignments[$uid] ?? 0;
-                $avgRecent = $employees->count() > 0
-                    ? array_sum($recentAssignments) / max(1, count($recentAssignments))
-                    : 0;
-                if ($recentCount <= $avgRecent) {
-                    $score += 10;
-                } elseif ($recentCount <= $avgRecent * 1.5) {
-                    $score += 5;
-                }
-
-                // 5. Rest period check from previous day (weight: 10)
-                $prevDayPlanning = Planning::where('user_id', $uid)
-                    ->where('date', Carbon::parse($dateStr)->subDay()->toDateString())
-                    ->with('shift')
-                    ->first();
-                if ($prevDayPlanning && $prevDayPlanning->shift) {
-                    $prevEnd = Carbon::parse($prevDayPlanning->date->toDateString().' '.$prevDayPlanning->shift->end_time->format('H:i:s'));
-                    if ($prevEnd->lessThan(Carbon::parse($prevDayPlanning->date->toDateString().' '.$prevDayPlanning->shift->start_time->format('H:i:s')))) {
-                        $prevEnd->addDay();
-                    }
-                    $newStart = Carbon::parse($dateStr.' '.$shift->start_time->format('H:i:s'));
-                    $restMinutes = $prevEnd->diffInMinutes($newStart);
-                    if ($restMinutes < 660) {
-                        $score -= 30; // Heavy penalty for rest violation
-                    } elseif ($restMinutes < 780) {
-                        $score -= 10; // Light penalty (tight but valid)
-                    } else {
-                        $score += 10; // Bonus for good rest
-                    }
-                } else {
-                    $score += 5; // No previous day assignment = flexible
-                }
-
-                // 6. Team compatibility (weight: 5)
-                if ($teamId && $employee->teams()->where('teams.id', $teamId)->exists()) {
-                    $score += 5;
-                }
-
-                $percentage = max(0, min(100, $score));
+                $score = $result['score'];
+                $reasons = $result['reasons'];
+                $breakdown = $result['breakdown'];
 
                 $suggestions[] = [
                     'employee' => [
@@ -263,22 +651,16 @@ class PlanningService
                     ],
                     'current_hours' => $currentHours,
                     'weekly_limit' => $employee->weekly_hours_limit,
-                    'rating' => $latestRating ? $latestRating->type : null,
-                    'match_percentage' => round($percentage),
-                    'score_breakdown' => [
-                        'rating' => $latestRating ? ($latestRating->type === 'excellent' ? 20 : -20) : 0,
-                        'hours_proximity' => $score >= 50 ? ($score - 50) : 0,
-                        'skill_match' => $shift->skills->isNotEmpty() ? round(($matchedCount ?? 0) / max(1, count($requiredSkillIds ?? [])) * 25) : 0,
-                        'workload_balance' => $recentCount <= $avgRecent ? 10 : 5,
-                        'rest_period' => 0,
-                        'team_compatibility' => $teamId ? 5 : 0,
-                    ],
+                    'rating' => $latestRating ? $latestRating->score : null,
+                    'match_percentage' => $score,
+                    'score_breakdown' => $breakdown,
+                    'reasons' => $reasons,
                 ];
             }
 
             usort($suggestions, fn ($a, $b) => $b['match_percentage'] <=> $a['match_percentage']);
 
-            return array_slice($suggestions, 0, 5);
+            return array_slice($suggestions, 0, self::SUGGESTION_LIMIT);
         });
     }
 
@@ -337,8 +719,8 @@ class PlanningService
 
                 $score = 50;
 
-                if ($latestRating) {
-                    $score += $latestRating->type === 'excellent' ? 20 : -20;
+                if ($latestRating && $latestRating->score) {
+                    $score += (int) round((($latestRating->score - 3) / 2) * 20);
                 }
 
                 if ($currentHours >= 32 && $currentHours <= 38) {
@@ -397,6 +779,11 @@ class PlanningService
     public static function bumpSuggestionsVersion(): void
     {
         Cache::increment('suggestions_version');
+    }
+
+    public function getHoursCalculator(): HoursCalculatorService
+    {
+        return $this->hoursCalculator;
     }
 
     // ─────────────────────────────────────────────────────────
@@ -794,7 +1181,7 @@ class PlanningService
             }
             $newStart = Carbon::parse($dateStr . ' ' . $shift->start_time->format('H:i:s'));
             $restMinutes = $prevEnd->diffInMinutes($newStart);
-            if ($restMinutes < 660) {
+            if ($restMinutes < self::REST_MINIMUM_MINUTES) {
                 $conflicts[] = [
                     'type' => 'rest_period_violation',
                     'severity' => 'error',
@@ -1082,6 +1469,8 @@ class PlanningService
             'total_assignments' => $totalPlannings,
             'coverage_percentage' => $coveragePercentage,
             'total_hours' => round($totalHours, 1),
+            'locked_count' => $plannings->where('is_locked', true)->count(),
+            'unlocked_count' => $plannings->where('is_locked', false)->count(),
             'overtime_forecast' => [
                 'count' => count($overtimeEmployees),
                 'employees' => $overtimeEmployees,

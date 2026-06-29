@@ -15,7 +15,7 @@
 <body>
     <div class="container">
         <div class="box">
-            <p class="message">{{ $message }}</p>
+            <p class="message">{{ $notificationMessage }}</p>
             <div class="detail">
                 <strong>Employee:</strong> {{ $employee->name }}<br>
                 <strong>Type:</strong> {{ ucfirst($leaveRequest->type) }}<br>

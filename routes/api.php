@@ -16,6 +16,7 @@ use App\Http\Controllers\PlanningTemplateController;
 use App\Http\Controllers\PointageController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\ReportController;
+use App\Http\Controllers\SearchController;
 use App\Http\Controllers\SettingController;
 use App\Http\Controllers\ShiftController;
 use App\Http\Controllers\SkillController;
@@ -33,7 +34,8 @@ Route::prefix('v1')->group(function () {
 
     // ── PUBLIC ──
     Route::post('/login', [AuthController::class, 'login'])
-        ->middleware('throttle:10,1');
+        ->middleware('throttle:10,1')
+        ->name('login');
 
     // ── AUTHENTICATED ──
     Route::middleware(['auth:sanctum', 'active.user'])->group(function () {
@@ -53,6 +55,10 @@ Route::prefix('v1')->group(function () {
         Route::post('/me/notifications/{id}/read', [NotificationController::class, 'markRead']);
         Route::post('/me/notifications/read-all', [NotificationController::class, 'markAllRead']);
         Route::get('/me/history', [EmployeeController::class, 'myHistory']);
+
+        // ── GLOBAL SEARCH ──
+        Route::get('/search', [SearchController::class, 'search']);
+
         // Pointage
         Route::post('/pointages/check-in', [PointageController::class, 'checkIn']);
         Route::post('/pointages/check-out', [PointageController::class, 'checkOut']);
@@ -90,6 +96,7 @@ Route::prefix('v1')->group(function () {
             // Planning
             Route::get('/planning', [PlanningController::class, 'index']);
             Route::post('/planning/suggest', [PlanningController::class, 'suggestEmployees']);
+            Route::get('/planning/employee-info/{employee}', [PlanningController::class, 'employeeInfo']);
             Route::get('/employees/{employee}/planning', [PlanningController::class, 'employeePlanning']);
 
             Route::middleware('planning.locked')->group(function () {
@@ -120,6 +127,12 @@ Route::prefix('v1')->group(function () {
 
             // ── PLANNING STATISTICS ──
             Route::get('/planning/stats', [PlanningStatsController::class, 'index']);
+
+            // ── PLANNING COVERAGE ──
+            Route::get('/planning/coverage', [PlanningController::class, 'coverage']);
+
+            // ── PLANNING QUALITY ──
+            Route::get('/planning/quality', [PlanningController::class, 'quality']);
 
             // ── PLANNING AUDIT ──
             Route::get('/planning/audits', [PlanningAuditController::class, 'index']);
@@ -158,9 +171,14 @@ Route::prefix('v1')->group(function () {
             Route::get('/dashboard/coverage', [DashboardController::class, 'coverageGauge']);
             Route::get('/dashboard/weekly-history', [DashboardController::class, 'weeklyHistory']);
 
-            // ── PAUSE SYSTEM (NEW) ──
+            // ── PAUSE SYSTEM ──
+            Route::get('/pauses', [PauseController::class, 'index']);
+            Route::get('/pauses/stats', [PauseController::class, 'stats']);
             Route::post('/pauses', [PauseController::class, 'store']);
+            Route::get('/pauses/{pause}', [PauseController::class, 'show']);
             Route::put('/pauses/{pause}', [PauseController::class, 'update']);
+            Route::post('/pauses/{pause}/cancel', [PauseController::class, 'cancel']);
+            Route::post('/pauses/{pause}/complete', [PauseController::class, 'complete']);
             Route::delete('/pauses/{pause}', [PauseController::class, 'destroy']);
             Route::get('/pauses/planning/{planningId}', [PauseController::class, 'byPlanning']);
             Route::get('/pauses/batch', [PauseController::class, 'batchByPlannings']);
@@ -177,9 +195,10 @@ Route::prefix('v1')->group(function () {
             Route::get('/audit-logs', [AuditLogController::class, 'index']);
             // ── RATINGS (ADMIN ONLY) ──
             Route::prefix('ratings')->group(function () {
-                Route::post('/toggle/{employee}', [\App\Http\Controllers\RatingController::class, 'toggle']);
+                Route::post('/rate/{employee}', [\App\Http\Controllers\RatingController::class, 'rate']);
                 Route::get('/current/{employee}', [\App\Http\Controllers\RatingController::class, 'current']);
                 Route::get('/history/{employee}', [\App\Http\Controllers\RatingController::class, 'history']);
+                Route::get('/stats', [\App\Http\Controllers\RatingController::class, 'stats']);
             });
 
             // ── TASKS (ADMIN ONLY) ──

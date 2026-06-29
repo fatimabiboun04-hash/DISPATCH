@@ -18,7 +18,7 @@ class StoreEmployeeRequest extends FormRequest
         return [
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'email', Rule::unique('users')->ignore($this->employee?->id)],
-            'password' => [$this->isMethod('POST') ? 'required' : 'nullable', 'string', 'min:8', 'confirmed'],
+            'password' => [$this->isMethod('POST') ? 'required' : 'nullable', 'string', 'min:8'],
             'role' => ['sometimes', Rule::in(['employee'])],
             'status' => ['sometimes', Rule::in(['active', 'suspended'])],
             'phone' => ['nullable', 'string', 'max:20'],

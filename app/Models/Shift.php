@@ -19,7 +19,7 @@ class Shift extends Model
         'is_active',
     ];
 
-    protected $appends = [];
+    protected $appends = ['duration_hours'];
 
     protected $casts = [
         'start_time' => 'datetime:H:i',
@@ -45,6 +45,10 @@ class Shift extends Model
     {
         $start = $this->start_time;
         $end = $this->end_time;
+
+        if (! $start || ! $end) {
+            return 0;
+        }
 
         // Handle night shifts crossing midnight
         if ($end->lessThan($start)) {

@@ -14,70 +14,22 @@ class RatingController extends Controller
 {
     use ApiResponse;
 
-    /**
-     * Toggle rating between ⭐ (Excellent) and 🚩 (Warning)
-     *
-     * First click on same star → Creates Excellent rating
-     * Second click on same star (if Excellent exists) → Converts to Warning
-     *
-     * This implements the prompt requirement:
-     * "First click → Yellow star ⭐ (Excellent)
-     *  Second click on same star → Red flag 🚩 (Warning / behavioral issue)"
-     */
-    public function toggle(Request $request, User $employee)
+    public function rate(Request $request, User $employee)
     {
         if (! $request->user() || ! $request->user()->isAdmin()) {
             return $this->errorResponse('Unauthorized. Only admins can rate employees.', 403);
         }
 
+        $validated = $request->validate([
+            'score' => 'required|integer|min:1|max:5',
+            'comment' => 'nullable|string|max:1000',
+        ]);
+
         $weekNumber = now()->isoWeek();
         $year = now()->isoWeekYear();
 
-        // Validate reason if provided
-        $validated = $request->validate([
-            'reason' => 'nullable|string|max:500',
-        ]);
+        $type = Rating::typeFromScore($validated['score']);
 
-        // Check for existing Excellent rating this week
-        $existingExcellent = Rating::where('user_id', $employee->id)
-            ->where('type', 'excellent')
-            ->where('week_number', $weekNumber)
-            ->where('year', $year)
-            ->first();
-
-        // SECOND CLICK: Excellent exists → Escalate to Warning (🚩)
-        if ($existingExcellent) {
-            // Delete the existing Excellent rating
-            $existingExcellent->delete();
-
-            // Create Warning rating
-            $rating = Rating::create([
-                'user_id' => $employee->id,
-                'rated_by' => auth()->id(),
-                'type' => 'warning',
-                'reason' => $validated['reason'] ?? 'Escalated from ⭐ to 🚩 - Behavioral issue detected',
-                'week_number' => $weekNumber,
-                'year' => $year,
-            ]);
-
-            AuditService::log('rating_escalated', Rating::class, $rating->id, null, [
-                'from' => 'excellent',
-                'to' => 'warning',
-                'employee_id' => $employee->id,
-            ]);
-
-            app(NotificationService::class)->notifyRatingGiven($employee, 'warning');
-            PlanningService::bumpSuggestionsVersion();
-
-            return $this->successResponse([
-                'rating' => $rating,
-                'type' => 'warning',
-                'icon' => '🚩',
-                'message' => "Warning (🚩) issued to {$employee->name}",
-            ]);
-        }
-
-        // FIRST CLICK or REPLACE: Delete any existing Warning, create Excellent (⭐)
         Rating::where('user_id', $employee->id)
             ->where('week_number', $weekNumber)
             ->where('year', $year)
@@ -86,31 +38,29 @@ class RatingController extends Controller
         $rating = Rating::create([
             'user_id' => $employee->id,
             'rated_by' => auth()->id(),
-            'type' => 'excellent',
-            'reason' => $validated['reason'] ?? 'Excellent performance this week ⭐',
+            'type' => $type,
+            'score' => $validated['score'],
+            'comment' => $validated['comment'] ?? null,
             'week_number' => $weekNumber,
             'year' => $year,
         ]);
 
         AuditService::log('rating_created', Rating::class, $rating->id, null, [
-            'type' => 'excellent',
+            'score' => $validated['score'],
             'employee_id' => $employee->id,
         ]);
 
-        app(NotificationService::class)->notifyRatingGiven($employee, 'excellent');
+        app(NotificationService::class)->notifyRatingGiven($employee, $type);
         PlanningService::bumpSuggestionsVersion();
 
         return $this->successResponse([
-            'rating' => $rating,
-            'type' => 'excellent',
-            'icon' => '⭐',
-            'message' => "Excellent rating (⭐) given to {$employee->name}",
+            'rating' => $rating->load('rater'),
+            'score' => $rating->score,
+            'type' => $rating->type,
+            'label' => Rating::scoreLabel($rating->score),
         ]);
     }
 
-    /**
-     * Get current rating for an employee (current week)
-     */
     public function current(User $employee)
     {
         $weekNumber = now()->isoWeek();
@@ -119,21 +69,25 @@ class RatingController extends Controller
         $rating = Rating::where('user_id', $employee->id)
             ->where('week_number', $weekNumber)
             ->where('year', $year)
+            ->with('rater')
             ->first();
+
+        $allRatings = Rating::where('user_id', $employee->id)->get();
+        $avgScore = $allRatings->avg('score');
 
         return $this->successResponse([
             'has_rating' => ! is_null($rating),
+            'score' => $rating?->score,
             'type' => $rating?->type,
-            'icon' => $rating?->type === 'excellent' ? '⭐' : ($rating?->type === 'warning' ? '🚩' : null),
-            'reason' => $rating?->reason,
+            'label' => $rating ? Rating::scoreLabel($rating->score) : null,
+            'comment' => $rating?->comment,
             'week_number' => $weekNumber,
             'year' => $year,
+            'average_score' => $avgScore ? round($avgScore, 1) : null,
+            'total_ratings' => $allRatings->count(),
         ]);
     }
 
-    /**
-     * Get rating history for an employee (all weeks)
-     */
     public function history(User $employee, Request $request)
     {
         $query = Rating::where('user_id', $employee->id)
@@ -141,12 +95,63 @@ class RatingController extends Controller
             ->orderBy('year', 'desc')
             ->orderBy('week_number', 'desc');
 
-        if ($request->has('type')) {
-            $query->where('type', $request->type);
+        if ($request->has('score')) {
+            $query->where('score', $request->score);
         }
 
         $ratings = $query->paginate(20);
 
         return $this->paginatedResponse($ratings);
+    }
+
+    public function stats()
+    {
+        $currentWeek = now()->isoWeek();
+        $currentYear = now()->isoWeekYear();
+
+        $allRatings = Rating::where('week_number', $currentWeek)
+            ->where('year', $currentYear)
+            ->get();
+
+        $totalRated = $allRatings->count();
+        $avgScore = $allRatings->avg('score');
+        $fiveStar = $allRatings->where('score', 5)->count();
+        $fourStar = $allRatings->where('score', 4)->count();
+        $threeStar = $allRatings->where('score', 3)->count();
+        $twoStar = $allRatings->where('score', 2)->count();
+        $oneStar = $allRatings->where('score', 1)->count();
+        $needsImprovement = $allRatings->where('score', '<=', 2)->count();
+
+        $recentEvaluations = Rating::with(['user', 'rater'])
+            ->where('week_number', $currentWeek)
+            ->where('year', $currentYear)
+            ->orderBy('created_at', 'desc')
+            ->limit(5)
+            ->get()
+            ->map(fn ($r) => [
+                'id' => $r->id,
+                'employee_name' => $r->user?->name,
+                'employee_id' => $r->user_id,
+                'score' => $r->score,
+                'label' => Rating::scoreLabel($r->score),
+                'rated_by_name' => $r->rater?->name,
+                'created_at' => $r->created_at,
+            ]);
+
+        return $this->successResponse([
+            'week_number' => $currentWeek,
+            'year' => $currentYear,
+            'total_rated' => $totalRated,
+            'average_score' => $avgScore ? round($avgScore, 1) : null,
+            'distribution' => [
+                '5' => $fiveStar,
+                '4' => $fourStar,
+                '3' => $threeStar,
+                '2' => $twoStar,
+                '1' => $oneStar,
+            ],
+            'needs_improvement_count' => $needsImprovement,
+            'recent_evaluations' => $recentEvaluations,
+        ]);
     }
 }
