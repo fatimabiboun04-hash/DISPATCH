@@ -59,6 +59,13 @@ class PlanningSandboxController extends Controller
 
         try {
             $result = $this->planningService->acceptSandboxPreview($validated['session_id']);
+
+            $createdPlannings = collect($result['created']);
+            if ($createdPlannings->isNotEmpty()) {
+                app(\App\Services\NotificationService::class)
+                    ->notifyPlanningBatchCreated($createdPlannings);
+            }
+
             return $this->successResponse($result, 'Sandbox accepted and planning created');
         } catch (\RuntimeException $e) {
             return $this->errorResponse($e->getMessage(), 422);

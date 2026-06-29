@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\LeaveRequest;
+use App\Models\Pause;
 use App\Models\Planning;
 use App\Models\PlanningAudit;
 use App\Models\PlanningSandboxItem;
@@ -430,6 +431,7 @@ class PlanningService
                 'type' => 'overlap',
                 'severity' => 'error',
                 'message' => "Employee already assigned to a shift that overlaps with this time period (conflicts with {$conflictingShift->name}).",
+                'suggestion' => "Choisissez un shift qui ne chevauche pas l'assignation existante ({$conflictingShift->name}).",
                 'planning_id' => $conflicting->id,
                 'conflict_details' => [
                     'planning_id' => $conflicting->id,
@@ -454,6 +456,7 @@ class PlanningService
                 'type' => 'leave_conflict',
                 'severity' => 'error',
                 'message' => "Employee is on approved leave ({$leaveRecord->type}) from {$leaveRecord->start_date} to {$leaveRecord->end_date}.",
+                'suggestion' => 'Choisissez un autre employé non en congé ou attendez le retour de congés.',
                 'conflict_details' => [
                     'leave_id' => $leaveRecord->id,
                     'type' => $leaveRecord->type,
@@ -483,6 +486,7 @@ class PlanningService
                     'type' => 'rest_period_violation',
                     'severity' => 'error',
                     'message' => "Insufficient rest period ({$restMinutes}min). Minimum 11 hours required between shifts.",
+                    'suggestion' => "Décalez le début du shift ou choisissez un shift plus tardif pour respecter les 11h de repos minimum.",
                     'conflict_details' => [
                         'rest_minutes' => $restMinutes,
                         'required_minutes' => self::REST_MINIMUM_MINUTES,
@@ -507,6 +511,7 @@ class PlanningService
                 'type' => 'weekly_hours_exceeded',
                 'severity' => 'error',
                 'message' => 'Assignment would exceed weekly hours limit (' . $limit . 'h).',
+                'suggestion' => "Réduisez les heures de la semaine ou augmentez la limite (actuellement {$currentHours}h + {$shift->duration_hours}h = {$afterAssignment}h > {$limit}h).",
                 'conflict_details' => [
                     'current_hours' => round($currentHours, 1),
                     'assignment_hours' => $shift->duration_hours,
@@ -546,7 +551,7 @@ class PlanningService
         $cacheKey = "suggestions:v{$version}:{$shift->id}:{$dateStr}:{$teamId}";
         $cacheTTL = now()->addMinutes(5);
 
-        return Cache::remember($cacheKey, $cacheTTL, function () use ($query, $shift, $dateStr, $weekNumber, $year, $date) {
+        return Cache::remember($cacheKey, $cacheTTL, function () use ($query, $shift, $dateStr, $weekNumber, $year, $date, $teamId) {
             $employees = $query->with(['skills', 'ratings' => function ($q) use ($weekNumber, $year) {
                 $q->where('week_number', $weekNumber)->where('year', $year);
             }])->get();
@@ -619,7 +624,10 @@ class PlanningService
 
                 $latestRating = $employee->ratings->sortByDesc('created_at')->first();
                 $prevDayPlanning = $prevPlannings->get($uid);
-                $employeeWeekPlannings = $allWeekPlannings->get($uid, collect());
+                $employeeWeekPlannings = $allWeekPlannings->get($uid);
+                if (!$employeeWeekPlannings) {
+                    $employeeWeekPlannings = new Collection();
+                }
 
                 // Compute consecutive day data
                 $consecutiveData = $this->computeConsecutiveData($employeeWeekPlannings, $shift, $dateStr);
@@ -1133,21 +1141,23 @@ class PlanningService
                 'type' => 'double_assignment',
                 'severity' => 'error',
                 'message' => "{$user->name} is already assigned on {$dateStr}.",
+                'suggestion' => "Supprimez l'assignation existante ou choisissez un autre créneau pour {$user->name}.",
             ];
         }
 
         // 2. Leave conflict
-        $onLeave = LeaveRequest::where('user_id', $user->id)
+        $leaveRecord = LeaveRequest::where('user_id', $user->id)
             ->where('status', 'approved')
             ->where('start_date', '<=', $dateStr)
             ->where('end_date', '>=', $dateStr)
-            ->exists();
+            ->first();
 
-        if ($onLeave) {
+        if ($leaveRecord) {
             $conflicts[] = [
                 'type' => 'leave_conflict',
                 'severity' => 'error',
-                'message' => "{$user->name} is on approved leave on {$dateStr}.",
+                'message' => "{$user->name} is on approved leave ({$leaveRecord->type}) from {$leaveRecord->start_date} to {$leaveRecord->end_date}.",
+                'suggestion' => 'Choisissez un autre employé non en congé ou attendez le retour de congés.',
             ];
         }
 
@@ -1163,6 +1173,7 @@ class PlanningService
                     'type' => 'skill_mismatch',
                     'severity' => 'warning',
                     'message' => "{$user->name} lacks required skills: " . implode(', ', $missingNames),
+                    'suggestion' => 'Affectez un employé possédant les compétences requises ou planifiez une formation pour ' . $user->name . '.',
                 ];
             }
         }
@@ -1186,6 +1197,7 @@ class PlanningService
                     'type' => 'rest_period_violation',
                     'severity' => 'error',
                     'message' => "Insufficient rest period ({$restMinutes}min). Minimum 11 hours required.",
+                    'suggestion' => "Décalez le début du shift ou choisissez un shift plus tardif pour respecter les {$restMinutes}min de repos.",
                 ];
             }
         }
@@ -1194,10 +1206,12 @@ class PlanningService
         $weekNumber = $date->isoWeek();
         $year = $date->isoWeekYear();
         if ($this->hoursCalculator->wouldExceedLimit($user, $weekNumber, $year, $shift->duration_hours)) {
+            $currentHours = $this->hoursCalculator->getWeeklyHours($user, $weekNumber, $year);
             $conflicts[] = [
                 'type' => 'weekly_hours_exceeded',
                 'severity' => 'error',
                 'message' => 'Would exceed weekly hours limit (' . ($user->weekly_hours_limit ?? 44) . 'h).',
+                'suggestion' => 'Réduisez les heures de la semaine ou augmentez la limite pour ' . $user->name . ' (actuellement ' . round($currentHours, 1) . 'h).',
             ];
         }
 
@@ -1213,6 +1227,81 @@ class PlanningService
                 'type' => 'duplicate_shift',
                 'severity' => 'warning',
                 'message' => "{$user->name} already has this shift on {$dateStr}.",
+                'suggestion' => 'Supprimez l\'assignation en double ou choisissez un autre shift pour ' . $user->name . '.',
+            ];
+        }
+
+        // 7. Missing pause (shift >= 6h without a pause)
+        $shiftDuration = $shift->getDurationMinutesAttribute() ?? 0;
+        if ($shiftDuration >= 360) {
+            $pauseExists = Pause::where('planning_id', $excludePlanningId)
+                ->whereIn('status', ['scheduled', 'active', 'completed'])
+                ->exists();
+
+            if (!$pauseExists) {
+                // Also check if any planning for this user+date has a pause
+                $existingPlanning = Planning::where('user_id', $user->id)
+                    ->where('date', $dateStr)
+                    ->when($excludePlanningId, fn ($q) => $q->where('id', '!=', $excludePlanningId))
+                    ->first();
+
+                $hasPause = false;
+                if ($existingPlanning) {
+                    $hasPause = Pause::where('planning_id', $existingPlanning->id)
+                        ->whereIn('status', ['scheduled', 'active', 'completed'])
+                        ->exists();
+                }
+
+                if (!$hasPause) {
+                    $conflicts[] = [
+                        'type' => 'missing_pause',
+                        'severity' => 'warning',
+                        'message' => "No pause scheduled for a {$shiftDuration}min shift on {$dateStr}.",
+                        'suggestion' => 'Ajoutez une pause programmée d\'au moins 20 minutes pour les shifts de plus de 6 heures.',
+                    ];
+                }
+            }
+        }
+
+        // 8. Consecutive night shifts exceeded
+        $isNight = $shift->end_time >= '22:00' || $shift->start_time <= '06:00';
+        if ($isNight) {
+            $nightConsecCount = 1;
+            $checkDate = $date->copy()->subDay();
+            for ($i = 0; $i < 6; $i++) {
+                $prevNight = Planning::where('user_id', $user->id)
+                    ->where('date', $checkDate->toDateString())
+                    ->whereHas('shift', function ($q) {
+                        $q->where('end_time', '>=', '22:00')
+                          ->orWhere('start_time', '<=', '06:00');
+                    })
+                    ->exists();
+
+                if ($prevNight) {
+                    $nightConsecCount++;
+                    $checkDate->subDay();
+                } else {
+                    break;
+                }
+            }
+
+            if ($nightConsecCount > self::MAX_NIGHT_SHIFT_CONSEC) {
+                $conflicts[] = [
+                    'type' => 'consecutive_nights_exceeded',
+                    'severity' => 'warning',
+                    'message' => "{$nightConsecCount} consecutive night shifts (max " . self::MAX_NIGHT_SHIFT_CONSEC . ").",
+                    'suggestion' => 'Attribuez un shift de jour ou accordez un jour de repos pour respecter la limite de nuits consécutives.',
+                ];
+            }
+        }
+
+        // 9. Employee unavailable (suspended)
+        if (!$user->isActive()) {
+            $conflicts[] = [
+                'type' => 'employee_unavailable',
+                'severity' => 'error',
+                'message' => "{$user->name} is not active (status: {$user->status}).",
+                'suggestion' => 'Choisissez un employé actif disponible ou réactivez le compte de ' . $user->name . '.',
             ];
         }
 

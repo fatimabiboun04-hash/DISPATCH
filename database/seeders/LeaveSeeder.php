@@ -95,8 +95,8 @@ class LeaveSeeder extends Seeder
         $nextWeekStart = now()->addWeek()->startOfWeek();
         LeaveRequest::create([
             'user_id' => $pendingEmployee->id,
-            'start_date' => $nextWeekStart->addDays(2)->format('Y-m-d'),
-            'end_date' => $nextWeekStart->addDays(4)->format('Y-m-d'),
+            'start_date' => (clone $nextWeekStart)->addDays(2)->format('Y-m-d'),
+            'end_date' => (clone $nextWeekStart)->addDays(4)->format('Y-m-d'),
             'reason' => 'Congé annuel — vacances',
             'type' => 'annual',
             'status' => 'pending',

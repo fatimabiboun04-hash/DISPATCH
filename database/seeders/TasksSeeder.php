@@ -30,7 +30,6 @@ class TasksSeeder extends Seeder
             ['title' => 'Mise à jour documentation',        'description' => 'Mettre à jour les procédures d\'intervention',                          'priority' => 'low'],
             ['title' => 'Déploiement équipements 4G',       'description' => 'Installation de nouvelles antennes 4G site Est',                         'priority' => 'high'],
             ['title' => 'Vérification alarmes réseau',      'description' => 'Analyser les alertes remontées par le système de supervision',           'priority' => 'medium'],
-            ['title' => 'Formation nouvel arrivant',        'description' => 'Former le nouveau technicien aux procédures terrain',                   'priority' => 'low'],
             ['title' => 'Remplacement onduleur défectueux', 'description' => 'Onduleur hors service au NOC — remplacement urgent',                     'priority' => 'high'],
             ['title' => 'Nettoyage baies techniques',       'description' => 'Dépoussiérage et vérification des baies de brassage',                     'priority' => 'low'],
             ['title' => 'Intervention client prioritaire',  'description' => 'Client entreprise sans connexion depuis 2h',                             'priority' => 'critical'],
@@ -39,45 +38,80 @@ class TasksSeeder extends Seeder
             ['title' => 'Vérification GPS véhicules',       'description' => 'S\'assurer que tous les trackers GPS des véhicules sont fonctionnels',   'priority' => 'low'],
             ['title' => 'Réparation câble aérien',         'description' => 'Câble endommagé par intempéries — réparation urgente',                    'priority' => 'high'],
             ['title' => 'Livraison matériel site distant',  'description' => 'Acheminer le matériel de remplacement vers le site de Bouskoura',         'priority' => 'medium'],
+            ['title' => 'Formation nouvel arrivant',        'description' => 'Former le nouveau technicien aux procédures terrain',                   'priority' => 'low'],
         ];
 
-        $statuses = ['pending', 'in_progress', 'completed', 'cancelled'];
+        $statuses = ['pending', 'in_progress', 'completed', 'completed', 'completed'];
 
-        foreach ($templates as $i => $template) {
-            $employee = $employees->random();
-            $status = $statuses[array_rand($statuses)];
-            $daysAgo = rand(0, 30);
-            $dueDate = now()->subDays($daysAgo)->addDays(rand(-5, 15));
+        // Create tasks for past weeks (linked to actual planning records with coherent dates)
+        $pastPlannings = Planning::where('date', '<', now()->startOfWeek()->format('Y-m-d'))
+            ->where('date', '>=', now()->subWeeks(4)->startOfWeek()->format('Y-m-d'))
+            ->whereHas('user', fn($q) => $q->where('status', 'active'))
+            ->inRandomOrder()
+            ->get();
 
-            // Some tasks link to a planning, some don't
-            $planning = Planning::where('user_id', $employee->id)
-                ->inRandomOrder()
-                ->first();
+        $taskIndex = 0;
+        foreach ($pastPlannings as $planning) {
+            if ($taskIndex >= count($templates)) break;
+            $template = $templates[$taskIndex];
+            $status = in_array($template['priority'], ['critical', 'high']) && rand(0, 1)
+                ? 'completed'
+                : $statuses[array_rand($statuses)];
 
             Task::create([
-                'user_id' => $employee->id,
-                'planning_id' => $planning?->id,
+                'user_id' => $planning->user_id,
+                'planning_id' => $planning->id,
                 'title' => $template['title'],
                 'description' => $template['description'],
                 'status' => $status,
                 'priority' => $template['priority'],
-                'due_date' => $dueDate->format('Y-m-d'),
+                'due_date' => $planning->date,
+                'created_by' => $admin->id,
+            ]);
+            $taskIndex++;
+        }
+
+        // Create additional tasks for the current week (all linked)
+        $currentWeekPlannings = Planning::where('week_number', (int) now()->isoWeek)
+            ->where('year', (int) now()->isoWeekYear)
+            ->inRandomOrder()
+            ->limit(10)
+            ->get();
+
+        foreach ($currentWeekPlannings as $planning) {
+            $template = $templates[array_rand($templates)];
+            $status = $statuses[array_rand($statuses)];
+
+            Task::create([
+                'user_id' => $planning->user_id,
+                'planning_id' => $planning->id,
+                'title' => $template['title'] . ' (S' . $planning->week_number . ')',
+                'description' => $template['description'],
+                'status' => $status,
+                'priority' => $template['priority'],
+                'due_date' => (clone $planning->date)->addDays(rand(0, 3))->format('Y-m-d'),
                 'created_by' => $admin->id,
             ]);
         }
 
-        // Add 5 additional completed tasks in the past
-        for ($i = 0; $i < 5; $i++) {
-            $employee = $employees->random();
+        // Add archived tasks linked to older past plannings
+        $oldPlannings = Planning::where('date', '<', now()->subWeeks(4)->startOfWeek()->format('Y-m-d'))
+            ->whereHas('user', fn($q) => $q->where('status', 'active'))
+            ->inRandomOrder()
+            ->limit(5)
+            ->get();
+
+        foreach ($oldPlannings as $planning) {
             $template = $templates[array_rand($templates)];
 
             Task::create([
-                'user_id' => $employee->id,
+                'user_id' => $planning->user_id,
+                'planning_id' => $planning->id,
                 'title' => $template['title'] . ' (archive)',
                 'description' => $template['description'] . ' — tâche archivée',
                 'status' => 'completed',
                 'priority' => $template['priority'],
-                'due_date' => now()->subDays(rand(15, 60))->format('Y-m-d'),
+                'due_date' => $planning->date,
                 'created_by' => $admin->id,
             ]);
         }

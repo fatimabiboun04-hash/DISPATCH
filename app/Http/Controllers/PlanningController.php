@@ -356,6 +356,9 @@ class PlanningController extends Controller
 
         // ── STEP 3: Send notifications ────────────────────────────────────────
         if (! empty($generated)) {
+            $generatedCollection = collect($generated);
+            $this->notificationService->notifyPlanningBatchCreated($generatedCollection);
+
             foreach ($generated as $planning) {
                 \App\Jobs\SendPlanningCompletedEmailsJob::dispatch($planning);
             }
@@ -512,7 +515,9 @@ class PlanningController extends Controller
             'planning_ids.*' => 'exists:plannings,id',
         ]);
 
+        $plannings = Planning::with('user')->whereIn('id', $validated['planning_ids'])->get();
         $deleted = $this->planningService->batchDelete($validated['planning_ids']);
+        $this->notificationService->notifyPlanningBatchDeleted($plannings);
 
         return $this->successResponse(['deleted_count' => $deleted], "{$deleted} planning records deleted");
     }
@@ -525,7 +530,9 @@ class PlanningController extends Controller
             'shift_id' => 'required|exists:shifts,id',
         ]);
 
+        $plannings = Planning::with('user')->whereIn('id', $validated['planning_ids'])->get();
         $updated = $this->planningService->batchUpdateShift($validated['planning_ids'], $validated['shift_id']);
+        $this->notificationService->notifyPlanningBatchShiftUpdated($plannings);
 
         return $this->successResponse(['updated_count' => $updated], "{$updated} planning records updated");
     }
@@ -538,7 +545,13 @@ class PlanningController extends Controller
             'user_id' => 'required|exists:users,id',
         ]);
 
+        $newUser = User::find($validated['user_id']);
+        $plannings = Planning::with('user')->whereIn('id', $validated['planning_ids'])->get();
         $updated = $this->planningService->batchAssignEmployee($validated['planning_ids'], $validated['user_id']);
+
+        foreach ($plannings as $p) {
+            $this->notificationService->notifyPlanningReassigned($p, $p->user, $newUser);
+        }
 
         return $this->successResponse(['updated_count' => $updated], "{$updated} planning records reassigned");
     }
@@ -551,6 +564,9 @@ class PlanningController extends Controller
         ]);
 
         $result = $this->planningService->duplicateDay($validated['source_date'], $validated['target_date']);
+
+        $createdPlannings = collect($result['created']);
+        $this->notificationService->notifyPlanningBatchCreated($createdPlannings);
 
         return $this->successResponse($result, $result['created_count'] . ' plannings duplicated');
     }

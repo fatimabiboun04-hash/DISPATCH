@@ -33,6 +33,9 @@ class DatabaseSeeder extends Seeder
             // Leaves — depends on employees, admin
             LeaveSeeder::class,
 
+            // Pauses — depends on planning, pointages
+            PauseSeeder::class,
+
             // Ratings — depends on employees, admin
             RatingSeeder::class,
 
@@ -41,6 +44,9 @@ class DatabaseSeeder extends Seeder
 
             // Reports — depends on admin
             ReportSeeder::class,
+
+            // Planning history — depends on planning, audit tables
+            PlanningHistorySeeder::class,
         ]);
     }
 }

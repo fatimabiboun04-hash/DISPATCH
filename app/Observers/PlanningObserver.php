@@ -56,7 +56,7 @@ class PlanningObserver
         PlanningService::bumpSuggestionsVersion();
     }
 
-    public function deleted(Planning $planning): void
+    public function deleting(Planning $planning): void
     {
         PlanningAudit::create([
             'planning_id' => $planning->id,

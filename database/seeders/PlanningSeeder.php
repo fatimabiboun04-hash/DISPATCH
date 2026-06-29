@@ -30,27 +30,14 @@ class PlanningSeeder extends Seeder
         $nightShifts = ['Nuit', 'Weekend Nuit'];
         $weekendDayShift = 'Weekend Jour';
 
-        // Track which employees have planning on which dates to detect conflicts
-        $assignedDates = [];
-
         foreach ($weekOffsets as $offset) {
-            $weekNumber = $currentWeekNumber + $offset;
-            $year = $currentYear;
-
-            // Handle year boundary
-            if ($weekNumber < 1) {
-                $weekNumber = 52 + $weekNumber;
-                $year--;
-            } elseif ($weekNumber > 52) {
-                $weekNumber = $weekNumber - 52;
-                $year++;
-            }
-
-            $startOfWeek = $now->copy()->setISODate($year, $weekNumber)->startOfWeek();
+            $startOfWeek = now()->startOfWeek()->addWeeks($offset);
+            $weekNumber = (int) $startOfWeek->isoWeek;
+            $year = (int) $startOfWeek->isoWeekYear;
             $isPast = $offset < 0;
             $isCurrent = $offset === 0;
             $isFuture = $offset > 0;
-            $isLocked = ($isPast || ($isCurrent && $now->dayOfWeek >= 5)); // Locked if past, or current and after Friday
+            $isLocked = ($isPast || ($isCurrent && $now->dayOfWeek >= 5));
 
             foreach ($employees as $employee) {
                 // Skip suspended employees for future weeks
@@ -104,11 +91,6 @@ class PlanningSeeder extends Seeder
                         'created_by' => $admin->id,
                         'is_locked' => $isLocked,
                     ]);
-
-                    $assignedDates[$employee->id][] = [
-                        'date' => $dateStr,
-                        'planning_id' => $planning->id,
-                    ];
                 }
             }
         }

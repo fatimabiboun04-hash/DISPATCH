@@ -103,6 +103,12 @@ class PlanningTemplateController extends Controller
             $validated['year']
         );
 
+        $createdPlannings = collect($result['created']);
+        if ($createdPlannings->isNotEmpty()) {
+            app(\App\Services\NotificationService::class)
+                ->notifyPlanningBatchCreated($createdPlannings);
+        }
+
         return $this->successResponse($result, 'Template loaded into week');
     }
 }

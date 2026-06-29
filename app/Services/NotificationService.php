@@ -124,6 +124,60 @@ class NotificationService
         }
     }
 
+    // ── Batch Planning ─────────────────────────────────────────
+
+    public function notifyPlanningBatchCreated(\Illuminate\Support\Collection $plannings): void
+    {
+        $plannings->each(function ($p) {
+            if ($p->user) {
+                $this->notify(
+                    $p->user,
+                    'planning',
+                    "Nouvelle affectation le {$p->date->format('d/m')} : {$p->shift->name}",
+                    ['planning_id' => $p->id, 'action' => 'created'],
+                );
+            }
+        });
+    }
+
+    public function notifyPlanningBatchDeleted(\Illuminate\Support\Collection $plannings): void
+    {
+        $plannings->each(function ($p) {
+            if ($p->user) {
+                $this->notify(
+                    $p->user,
+                    'planning',
+                    "Affectation supprimée pour le {$p->date->format('d/m')}",
+                    ['planning_id' => $p->id, 'action' => 'deleted'],
+                );
+            }
+        });
+    }
+
+    public function notifyPlanningBatchShiftUpdated(\Illuminate\Support\Collection $plannings): void
+    {
+        $plannings->each(function ($p) {
+            if ($p->user) {
+                $this->notify(
+                    $p->user,
+                    'planning',
+                    "Votre planning du {$p->date->format('d/m')} a été modifié (shift)",
+                    ['planning_id' => $p->id, 'action' => 'updated'],
+                );
+            }
+        });
+    }
+
+    public function notifyPlanningReassigned(Planning $planning, ?User $oldUser, User $newUser): void
+    {
+        $this->notify(
+            $newUser,
+            'planning',
+            "Nouvelle affectation le {$planning->date->format('d/m')} : {$planning->shift->name}",
+            ['planning_id' => $planning->id, 'action' => 'assigned'],
+        );
+    }
+
     // ── Pointage ───────────────────────────────────────────────
 
     public function notifyPointageFlagged(Pointage $pointage): void

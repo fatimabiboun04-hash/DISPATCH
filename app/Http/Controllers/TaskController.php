@@ -29,7 +29,7 @@ class TaskController extends Controller
     {
         $validated = $request->validate([
             'user_id' => ['required', 'exists:users,id'],
-            'planning_id' => ['nullable', 'exists:plannings,id'],
+            'planning_id' => ['required', 'exists:plannings,id'],
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'status' => ['sometimes', 'in:pending,in_progress,completed,cancelled'],
@@ -53,7 +53,7 @@ class TaskController extends Controller
     {
         $validated = $request->validate([
             'user_id' => ['sometimes', 'exists:users,id'],
-            'planning_id' => ['nullable', 'exists:plannings,id'],
+            'planning_id' => ['sometimes', 'exists:plannings,id'],
             'title' => ['sometimes', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'status' => ['sometimes', 'in:pending,in_progress,completed,cancelled'],
