@@ -12,6 +12,7 @@ use App\Traits\ApiResponse;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use InvalidArgumentException;
 
 class PauseController extends Controller
@@ -122,6 +123,9 @@ class PauseController extends Controller
                     'planning_id' => $planning->id,
                 ]);
 
+                Cache::forget('dashboard.stats');
+                Cache::forget('dashboard.active-pauses');
+
                 return $this->successResponse(
                     $pause->load(['user', 'planning.shift', 'team', 'canceller', 'creator']),
                     'Pause créée',
@@ -144,6 +148,9 @@ class PauseController extends Controller
                 'count' => count($pauses),
                 'type' => $validated['type'] ?? 'break',
             ]);
+
+            Cache::forget('dashboard.stats');
+            Cache::forget('dashboard.active-pauses');
 
             return $this->successResponse($pauses, 'Pauses créées pour l\'équipe', 201);
         } catch (InvalidArgumentException $e) {
@@ -176,6 +183,9 @@ class PauseController extends Controller
 
         AuditService::log('pause_updated', Pause::class, $pause->id);
 
+        Cache::forget('dashboard.stats');
+        Cache::forget('dashboard.active-pauses');
+
         return $this->successResponse($updated, 'Pause mise à jour');
     }
 
@@ -191,6 +201,9 @@ class PauseController extends Controller
         }
 
         AuditService::log('pause_cancelled', Pause::class, $pause->id);
+
+        Cache::forget('dashboard.stats');
+        Cache::forget('dashboard.active-pauses');
 
         return $this->successResponse($updated, 'Pause annulée');
     }
@@ -208,18 +221,24 @@ class PauseController extends Controller
 
         AuditService::log('pause_completed_early', Pause::class, $pause->id);
 
+        Cache::forget('dashboard.stats');
+        Cache::forget('dashboard.active-pauses');
+
         return $this->successResponse($updated, 'Pause terminée');
     }
 
     /**
      * DELETE /v1/pauses/{pause}
      */
-    public function destroy(Pause $pause): JsonResponse
+    public function destroy(Pause $pause)
     {
         $pauseId = $pause->id;
         $pause->delete();
 
         AuditService::log('pause_deleted', Pause::class, $pauseId);
+
+        Cache::forget('dashboard.stats');
+        Cache::forget('dashboard.active-pauses');
 
         return response()->noContent();
     }

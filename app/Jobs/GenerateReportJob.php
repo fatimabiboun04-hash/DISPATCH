@@ -31,7 +31,7 @@ class GenerateReportJob implements ShouldQueue
         try {
             $this->report->update(['status' => 'processing']);
 
-            $generator = new \App\Services\ReportGeneratorService;
+            $generator = app(\App\Services\ReportGeneratorService::class);
             $filePath = $generator->generate($this->report);
 
             $this->report->update([

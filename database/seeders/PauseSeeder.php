@@ -25,8 +25,8 @@ class PauseSeeder extends Seeder
         $statuses = ['completed'];
 
         foreach ($plannings as $planning) {
-            // 50% chance of having at least one pause per shift
-            if (rand(0, 100) > 50) continue;
+            // 80% chance of having at least one pause per shift
+            if (rand(0, 100) > 80) continue;
 
             $planning->load('shift');
             $pointage = $planning->pointages()->whereNotNull('check_in_at')->first();

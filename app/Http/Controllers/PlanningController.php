@@ -13,6 +13,7 @@ use App\Services\PlanningService;
 use App\Traits\ApiResponse;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class PlanningController extends Controller
@@ -34,7 +35,8 @@ class PlanningController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Planning::with(['user', 'shift.skills', 'team', 'creator']);
+        $query = Planning::with(['user', 'shift.skills', 'team', 'creator'])->withCount('tasks');
+
 
         if ($request->has('week_number') && $request->has('year')) {
             $query->where('week_number', $request->week_number)
@@ -113,6 +115,9 @@ class PlanningController extends Controller
 
         $this->notificationService->notifyPlanningCreated($planning);
 
+        Cache::forget('dashboard.stats');
+        Cache::forget('dashboard.coverage');
+
         return $this->successResponse($planning->load(['user', 'shift', 'team']), 'Planning created', 201);
     }
 
@@ -153,6 +158,9 @@ class PlanningController extends Controller
 
         $this->notificationService->notifyPlanningUpdated($planning);
 
+        Cache::forget('dashboard.stats');
+        Cache::forget('dashboard.coverage');
+
         return $this->successResponse($planning->load(['user', 'shift', 'team']), 'Planning updated');
     }
 
@@ -169,6 +177,9 @@ class PlanningController extends Controller
         $planning->delete();
 
         AuditService::log('deleted', Planning::class, $planningId);
+
+        Cache::forget('dashboard.stats');
+        Cache::forget('dashboard.coverage');
 
         return response()->noContent();
     }
@@ -194,21 +205,126 @@ class PlanningController extends Controller
 
     /**
      * Get current user's planning (employee self-service).
+     * Single source of truth — reads directly from Planning table.
      */
     public function myPlanning(Request $request)
     {
         $user = $request->user();
 
         $plannings = Planning::where('user_id', $user->id)
-            ->with('shift')
+            ->with([
+                'shift.skills',
+                'team',
+                'pauses',
+                'tasks',
+                'pointages',
+            ])
+            ->withCount('tasks')
             ->when($request->has('week_number'), function ($query) use ($request) {
                 $query->where('week_number', $request->week_number)
                     ->where('year', $request->year ?? now()->year);
             })
             ->orderBy('date')
-            ->get();
+            ->orderBy('shift_id')
+            ->get()
+            ->map(function ($planning) {
+                $shift = $planning->shift;
+                $totalMinutes = 0;
+                $pauseMinutes = 0;
+
+                if ($shift) {
+                    $start = \Carbon\Carbon::parse($shift->start_time);
+                    $end   = \Carbon\Carbon::parse($shift->end_time);
+                    $totalMinutes = $start->diffInMinutes($end) - ($shift->break_minutes ?? 0);
+                    $pauseMinutes = $shift->break_minutes ?? 0;
+                }
+
+                $planning->setAttribute('duration_hours', round($totalMinutes / 60, 1));
+                $planning->setAttribute('break_minutes', $pauseMinutes);
+
+                // Week-level lock: if all plannings for this user/week are locked
+                $planning->setAttribute('week_locked', $planning->is_locked);
+
+                return $planning;
+            });
 
         return $this->successResponse($plannings);
+    }
+
+    /**
+     * Employee dashboard — today's shift, next shift, weekly stats.
+     */
+    public function myDashboard(Request $request)
+    {
+        $user = $request->user();
+        $today = now()->format('Y-m-d');
+        $weekNum = now()->weekOfYear;
+        $year = now()->year;
+
+        $todayPlanning = Planning::where('user_id', $user->id)
+            ->where('date', $today)
+            ->with(['shift.skills', 'team', 'pauses', 'tasks'])
+            ->withCount('tasks')
+            ->first();
+
+        // Next upcoming shift (from tomorrow onwards, ordered by date)
+        $nextPlanning = Planning::where('user_id', $user->id)
+            ->where('date', '>', $today)
+            ->with(['shift', 'team'])
+            ->orderBy('date')
+            ->orderBy('shift_id')
+            ->first();
+
+        // Weekly stats from the planning records
+        $weekPlannings = Planning::where('user_id', $user->id)
+            ->where('week_number', $weekNum)
+            ->where('year', $year)
+            ->with('shift')
+            ->get();
+
+        $weeklyHours = 0;
+        $shiftCount = $weekPlannings->count();
+        $completedShifts = 0;
+
+        foreach ($weekPlannings as $p) {
+            if ($p->shift) {
+                $start = \Carbon\Carbon::parse($p->shift->start_time);
+                $end   = \Carbon\Carbon::parse($p->shift->end_time);
+                $mins  = $start->diffInMinutes($end) - ($p->shift->break_minutes ?? 0);
+                $weeklyHours += round($mins / 60, 1);
+            }
+            // Count plannings before today as "completed"
+            if ($p->date < $today) {
+                $completedShifts++;
+            }
+        }
+
+        $overtime = max(0, $weeklyHours - 44);
+
+        // Current active pause
+        $activePause = \App\Models\Pause::where('user_id', $user->id)
+            ->whereIn('status', ['active', 'scheduled'])
+            ->whereDate('pause_start', $today)
+            ->first();
+
+        // Today's pointage (check-in status)
+        $todayPointage = \App\Models\Pointage::where('user_id', $user->id)
+            ->whereDate('check_in_at', $today)
+            ->first();
+
+        return $this->successResponse([
+            'today'           => $todayPlanning,
+            'next'            => $nextPlanning,
+            'weekly_hours'    => round($weeklyHours, 1),
+            'weekly_overtime' => round($overtime, 1),
+            'shifts_count'    => $shiftCount,
+            'completed_shifts' => $completedShifts,
+            'remaining_shifts' => max(0, $shiftCount - $completedShifts),
+            'current_week'    => ['week_number' => $weekNum, 'year' => $year],
+            'active_pause'    => $activePause,
+            'is_checked_in'   => $todayPointage && !$todayPointage->check_out,
+            'today_pointage'  => $todayPointage,
+        ]);
     }
 
     /**
@@ -519,6 +635,15 @@ class PlanningController extends Controller
         $deleted = $this->planningService->batchDelete($validated['planning_ids']);
         $this->notificationService->notifyPlanningBatchDeleted($plannings);
 
+        AuditService::log('batch_deleted', Planning::class, 0, null, [
+            'planning_ids' => $validated['planning_ids'],
+            'deleted_count' => $deleted,
+            'employee_count' => $plannings->pluck('user_id')->unique()->count(),
+        ]);
+
+        Cache::forget('dashboard.stats');
+        Cache::forget('dashboard.coverage');
+
         return $this->successResponse(['deleted_count' => $deleted], "{$deleted} planning records deleted");
     }
 
@@ -533,6 +658,15 @@ class PlanningController extends Controller
         $plannings = Planning::with('user')->whereIn('id', $validated['planning_ids'])->get();
         $updated = $this->planningService->batchUpdateShift($validated['planning_ids'], $validated['shift_id']);
         $this->notificationService->notifyPlanningBatchShiftUpdated($plannings);
+
+        AuditService::log('batch_shift_updated', Planning::class, 0, null, [
+            'planning_ids' => $validated['planning_ids'],
+            'new_shift_id' => $validated['shift_id'],
+            'updated_count' => $updated,
+        ]);
+
+        Cache::forget('dashboard.stats');
+        Cache::forget('dashboard.coverage');
 
         return $this->successResponse(['updated_count' => $updated], "{$updated} planning records updated");
     }
@@ -553,6 +687,17 @@ class PlanningController extends Controller
             $this->notificationService->notifyPlanningReassigned($p, $p->user, $newUser);
         }
 
+        AuditService::log('batch_employee_moved', Planning::class, 0, null, [
+            'planning_ids' => $validated['planning_ids'],
+            'old_user_id' => $plannings->first()?->user_id,
+            'new_user_id' => $validated['user_id'],
+            'new_employee' => $newUser->name,
+            'updated_count' => $updated,
+        ]);
+
+        Cache::forget('dashboard.stats');
+        Cache::forget('dashboard.coverage');
+
         return $this->successResponse(['updated_count' => $updated], "{$updated} planning records reassigned");
     }
 
@@ -567,6 +712,15 @@ class PlanningController extends Controller
 
         $createdPlannings = collect($result['created']);
         $this->notificationService->notifyPlanningBatchCreated($createdPlannings);
+
+        AuditService::log('day_duplicated', Planning::class, 0, null, [
+            'source_date' => $validated['source_date'],
+            'target_date' => $validated['target_date'],
+            'created_count' => $result['created_count'],
+        ]);
+
+        Cache::forget('dashboard.stats');
+        Cache::forget('dashboard.coverage');
 
         return $this->successResponse($result, $result['created_count'] . ' plannings duplicated');
     }

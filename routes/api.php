@@ -14,6 +14,7 @@ use App\Http\Controllers\PlanningSandboxController;
 use App\Http\Controllers\PlanningStatsController;
 use App\Http\Controllers\PlanningTemplateController;
 use App\Http\Controllers\PointageController;
+use App\Http\Controllers\PrintController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SearchController;
@@ -46,6 +47,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/me', [ProfileController::class, 'show']);
         Route::put('/me', [ProfileController::class, 'update']);
         Route::get('/me/planning', [PlanningController::class, 'myPlanning']);
+        Route::get('/me/dashboard', [PlanningController::class, 'myDashboard']);
         Route::get('/me/pointages', [PointageController::class, 'myPointages']);
         Route::get('/me/leave-requests', [LeaveRequestController::class, 'myRequests']);
         Route::post('/leave-requests', [LeaveRequestController::class, 'store']);
@@ -175,14 +177,15 @@ Route::prefix('v1')->group(function () {
             Route::get('/pauses', [PauseController::class, 'index']);
             Route::get('/pauses/stats', [PauseController::class, 'stats']);
             Route::post('/pauses', [PauseController::class, 'store']);
+            // Specific pause routes MUST come before the wildcard {pause}
+            Route::get('/pauses/planning/{planningId}', [PauseController::class, 'byPlanning']);
+            Route::get('/pauses/batch', [PauseController::class, 'batchByPlannings']);
+            Route::get('/pauses/active-today', [PauseController::class, 'activeToday']);
             Route::get('/pauses/{pause}', [PauseController::class, 'show']);
             Route::put('/pauses/{pause}', [PauseController::class, 'update']);
             Route::post('/pauses/{pause}/cancel', [PauseController::class, 'cancel']);
             Route::post('/pauses/{pause}/complete', [PauseController::class, 'complete']);
             Route::delete('/pauses/{pause}', [PauseController::class, 'destroy']);
-            Route::get('/pauses/planning/{planningId}', [PauseController::class, 'byPlanning']);
-            Route::get('/pauses/batch', [PauseController::class, 'batchByPlannings']);
-            Route::get('/pauses/active-today', [PauseController::class, 'activeToday']);
 
             // Dashboard pause widget
             Route::get('/dashboard/active-pauses', [DashboardController::class, 'activePauses']);
@@ -208,6 +211,14 @@ Route::prefix('v1')->group(function () {
             Route::post('/skills', [SkillController::class, 'store']);
             Route::put('/skills/{skill}', [SkillController::class, 'update']);
             Route::delete('/skills/{skill}', [SkillController::class, 'destroy']);
+
+            // ── PRINTING (ADMIN ONLY) ──
+            Route::prefix('print')->group(function () {
+                Route::get('/weekly-planning', [PrintController::class, 'weeklyPlanning']);
+                Route::get('/employee-planning/{employee}', [PrintController::class, 'employeePlanning']);
+                Route::get('/team-planning/{team}', [PrintController::class, 'teamPlanning']);
+                Route::get('/daily-planning', [PrintController::class, 'dailyPlanning']);
+            });
 
             // ── ABSENCE SYSTEM (ADMIN ONLY) ──
             Route::prefix('pointage')->group(function () {

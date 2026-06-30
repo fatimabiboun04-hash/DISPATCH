@@ -399,10 +399,11 @@ class PlanningService
     public function validateAssignment(User $user, Shift $shift, Carbon $date, ?int $excludePlanningId = null): array
     {
         $errors = [];
+        $dateStr = $date->toDateString();
 
         // 1. Overlapping shifts
         $overlappingPlannings = Planning::where('user_id', $user->id)
-            ->where('date', $date->toDateString())
+            ->where('date', $dateStr)
             ->when($excludePlanningId, function ($query) use ($excludePlanningId) {
                 $query->where('id', '!=', $excludePlanningId);
             })
@@ -439,16 +440,49 @@ class PlanningService
                     'shift_type' => $conflictingShift->type,
                     'start_time' => $conflictingShift->start_time->format('H:i'),
                     'end_time' => $conflictingShift->end_time->format('H:i'),
-                    'date' => $date->toDateString(),
+                    'date' => $dateStr,
                 ],
             ];
         }
 
-        // 2. Approved leave
+        // 2. Pause conflicts — check if employee has pauses overlapping with shift
+        $conflictingPauses = Pause::where('user_id', $user->id)
+            ->whereDate('pause_start', $dateStr)
+            ->whereIn('status', ['scheduled', 'active'])
+            ->get()
+            ->filter(function ($pause) use ($shift, $dateStr) {
+                $pauseStart = Carbon::parse($dateStr.' '.$pause->pause_start);
+                $pauseEnd = $pause->pause_end
+                    ? Carbon::parse($dateStr.' '.$pause->pause_end)
+                    : Carbon::parse($dateStr.' '.$pause->pause_start)->addMinutes($pause->duration_minutes ?: 30);
+                $shiftStart = Carbon::parse($dateStr.' '.$shift->start_time->format('H:i:s'));
+                $shiftEnd = Carbon::parse($dateStr.' '.$shift->end_time->format('H:i:s'));
+                if ($shiftEnd->lessThan($shiftStart)) $shiftEnd->addDay();
+
+                return $pauseStart < $shiftEnd && $pauseEnd > $shiftStart;
+            });
+
+        if ($conflictingPauses->isNotEmpty()) {
+            $cp = $conflictingPauses->first();
+            $errors[] = [
+                'type' => 'pause_conflict',
+                'severity' => 'warning',
+                'message' => "Employee has a pause ({$cp->pause_start}–{$cp->pause_end}) that overlaps with this shift time.",
+                'suggestion' => "Ajustez les horaires de la pause ou choisissez un shift différent.",
+                'conflict_details' => [
+                    'pause_id' => $cp->id,
+                    'pause_start' => $cp->pause_start,
+                    'pause_end' => $cp->pause_end,
+                    'date' => $dateStr,
+                ],
+            ];
+        }
+
+        // 3. Approved leave
         $leaveRecord = LeaveRequest::where('user_id', $user->id)
             ->where('status', 'approved')
-            ->where('start_date', '<=', $date->toDateString())
-            ->where('end_date', '>=', $date->toDateString())
+            ->where('start_date', '<=', $dateStr)
+            ->where('end_date', '>=', $dateStr)
             ->first();
 
         if ($leaveRecord) {
@@ -467,7 +501,17 @@ class PlanningService
             ];
         }
 
-        // 3. Rest period (min 11h)
+        // 4. Employee availability
+        if ($user->status !== 'active') {
+            $errors[] = [
+                'type' => 'employee_unavailable',
+                'severity' => 'error',
+                'message' => "Employee ({$user->name}) is not active and cannot be assigned.",
+                'suggestion' => 'Activez le compte de l\'employé ou choisissez un autre employé.',
+            ];
+        }
+
+        // 5. Rest period (min 11h)
         $prevShift = Planning::where('user_id', $user->id)
             ->where('date', $date->copy()->subDay()->toDateString())
             ->whereNotNull('shift_id')
@@ -479,7 +523,7 @@ class PlanningService
             if ($prevEnd->lessThan(Carbon::parse($prevShift->date->toDateString().' '.$prevShift->shift->start_time->format('H:i:s')))) {
                 $prevEnd->addDay();
             }
-            $newStart = Carbon::parse($date->toDateString().' '.$shift->start_time->format('H:i:s'));
+            $newStart = Carbon::parse($dateStr.' '.$shift->start_time->format('H:i:s'));
             $restMinutes = $prevEnd->diffInMinutes($newStart);
             if ($restMinutes < self::REST_MINIMUM_MINUTES) {
                 $errors[] = [
@@ -498,7 +542,7 @@ class PlanningService
             }
         }
 
-        // 4. Weekly hours limit
+        // 6. Weekly hours limit
         $weekNumber = $date->isoWeek();
         $year = $date->isoWeekYear();
 
@@ -520,6 +564,48 @@ class PlanningService
                     'difference' => round($afterAssignment - $limit, 1),
                 ],
             ];
+        }
+
+        // 7. Daily hours check
+        $dailyTotal = Planning::where('user_id', $user->id)
+            ->where('date', $dateStr)
+            ->when($excludePlanningId, fn ($q) => $q->where('id', '!=', $excludePlanningId))
+            ->with('shift')
+            ->get()
+            ->sum(fn ($p) => $p->shift?->duration_hours ?? 0);
+        $dailyAfter = $dailyTotal + $shift->duration_hours;
+        if ($dailyAfter > 16) {
+            $errors[] = [
+                'type' => 'daily_hours_exceeded',
+                'severity' => 'error',
+                'message' => "Assignment would exceed 16 daily hours ({$dailyAfter}h).",
+                'suggestion' => 'Réduisez les heures de la journée.',
+                'conflict_details' => [
+                    'current_daily' => round($dailyTotal, 1),
+                    'assignment_hours' => $shift->duration_hours,
+                    'after_assignment' => round($dailyAfter, 1),
+                ],
+            ];
+        }
+
+        // 8. Required skills check
+        if ($shift->skills->isNotEmpty()) {
+            $employeeSkillIds = $user->skills->pluck('id')->toArray();
+            $requiredSkillIds = $shift->skills->pluck('id')->toArray();
+            $missingSkills = array_diff($requiredSkillIds, $employeeSkillIds);
+            if (!empty($missingSkills)) {
+                $missingNames = $shift->skills->whereIn('id', $missingSkills)->pluck('name')->implode(', ');
+                $errors[] = [
+                    'type' => 'missing_skills',
+                    'severity' => 'warning',
+                    'message' => "Employee lacks required skills: {$missingNames}.",
+                    'suggestion' => "Assignez un employé possédant les compétences requises ou formez l'employé.",
+                    'conflict_details' => [
+                        'missing_skill_ids' => array_values($missingSkills),
+                        'missing_skill_names' => $missingNames,
+                    ],
+                ];
+            }
         }
 
         return [

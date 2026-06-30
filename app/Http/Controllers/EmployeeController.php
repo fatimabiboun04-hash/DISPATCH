@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Requests\StoreEmployeeRequest;
 use App\Models\User;
 use App\Services\AuditService;
+use App\Services\HoursCalculatorService;
 use App\Services\NotificationService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
@@ -95,13 +96,39 @@ class EmployeeController extends Controller
     }
 
     /**
-     * Show single employee.
+     * Show single employee with computed stats.
      */
     public function show(User $employee)
     {
-        return $this->successResponse(
-            $employee->load(['teams', 'skills', 'ratings' => fn ($q) => $q->latest()->limit(10)])
-        );
+        $employee->load(['teams', 'skills', 'ratings' => fn ($q) => $q->latest()->limit(10)]);
+
+        $now = now();
+        $weekNumber = $now->isoWeek();
+        $year = $now->isoWeekYear();
+        $hoursStatus = app(HoursCalculatorService::class)->getHoursStatus($employee, $weekNumber, $year);
+
+        $monthStart = $now->copy()->startOfMonth();
+        $monthEnd = $now->copy()->endOfMonth();
+        $monthlyMinutes = \App\Models\Pointage::where('user_id', $employee->id)
+            ->whereNotNull('check_out_at')
+            ->whereNotNull('worked_minutes')
+            ->whereBetween('check_in_at', [$monthStart, $monthEnd])
+            ->sum('worked_minutes');
+        $monthlyHours = round($monthlyMinutes / 60, 1);
+
+        $data = $employee->toArray();
+        $data['stats'] = [
+            'weekly_hours' => $hoursStatus['hours'],
+            'weekly_limit' => $employee->weekly_hours_limit,
+            'hours_state' => $hoursStatus['color'],
+            'alert_message' => $hoursStatus['alert_message'],
+            'is_overtime' => $hoursStatus['is_overtime'],
+            'is_under_hours' => $hoursStatus['is_under_hours'],
+            'monthly_hours' => $monthlyHours,
+            'current_week' => $weekNumber,
+        ];
+
+        return $this->successResponse($data);
     }
 
     /**
@@ -166,7 +193,7 @@ class EmployeeController extends Controller
     }
 
     /**
-     * Shared history builder — no duplication.
+     * Shared history builder — includes AuditLog + PlanningAudit events.
      */
     private function buildHistory(User $user, Request $request): \Illuminate\Http\JsonResponse
     {
@@ -179,7 +206,9 @@ class EmployeeController extends Controller
         $ratingCount = \App\Models\Rating::where('user_id', $user->id)->count();
         $leaveCount = \App\Models\LeaveRequest::where('user_id', $user->id)->count();
         $planningCount = \App\Models\Planning::where('user_id', $user->id)->count();
-        $totalCount = $pointageCount + $ratingCount + $leaveCount + $planningCount;
+        $auditCount = \App\Models\AuditLog::where('user_id', $user->id)->count();
+        $planningAuditCount = \App\Models\PlanningAudit::where('user_id', $user->id)->count();
+        $totalCount = $pointageCount + $ratingCount + $leaveCount + $planningCount + $auditCount + $planningAuditCount;
 
         $pointages = \App\Models\Pointage::where('user_id', $user->id)
             ->latest('check_in_at')
@@ -235,10 +264,53 @@ class EmployeeController extends Controller
                 'meta' => ['date' => $p->date, 'shift' => optional($p->shift)->name],
             ]);
 
+        // Audit logs (task_created, pause_updated, batch operations, etc.)
+        $audits = \App\Models\AuditLog::where('user_id', $user->id)
+            ->latest('created_at')
+            ->limit($fetchLimit)
+            ->get()
+            ->map(fn ($a) => [
+                'type' => 'audit',
+                'icon' => '📋',
+                'title' => 'System: '.str_replace('_', ' ', ucfirst($a->action)),
+                'description' => $a->entity_type.' #'.$a->entity_id
+                    .($a->new_values ? ' — '.json_encode($a->new_values) : ''),
+                'date' => $a->created_at,
+                'meta' => [
+                    'action' => $a->action,
+                    'entity_type' => $a->entity_type,
+                    'entity_id' => $a->entity_id,
+                    'old_values' => $a->old_values,
+                    'new_values' => $a->new_values,
+                ],
+            ]);
+
+        // PlanningAudit logs (planning-specific history)
+        $planningAudits = \App\Models\PlanningAudit::where('user_id', $user->id)
+            ->latest('created_at')
+            ->limit($fetchLimit)
+            ->get()
+            ->map(fn ($pa) => [
+                'type' => 'planning_audit',
+                'icon' => '📋',
+                'title' => 'Planning '.$pa->action,
+                'description' => 'Planning #'.$pa->planning_id
+                    .($pa->new_values ? ' — '.json_encode($pa->new_values) : ''),
+                'date' => $pa->created_at,
+                'meta' => [
+                    'action' => $pa->action,
+                    'planning_id' => $pa->planning_id,
+                    'old_values' => $pa->old_values,
+                    'new_values' => $pa->new_values,
+                ],
+            ]);
+
         $timeline = $pointages
             ->concat($ratings)
             ->concat($leaves)
             ->concat($plannings)
+            ->concat($audits)
+            ->concat($planningAudits)
             ->sortByDesc('date')
             ->values();
 

@@ -47,6 +47,9 @@ class DatabaseSeeder extends Seeder
 
             // Planning history — depends on planning, audit tables
             PlanningHistorySeeder::class,
+
+            // Historical planning — ensures all previous weeks are fully populated
+            HistoricalPlanningSeeder::class,
         ]);
     }
 }

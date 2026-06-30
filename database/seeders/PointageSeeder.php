@@ -26,9 +26,6 @@ class PointageSeeder extends Seeder
         $statuses = ['on_time', 'late', 'no_show', 'on_time', 'on_time', 'late', 'flagged'];
 
         foreach ($plannings as $planning) {
-            // 20% chance of no pointage (employee didn't check in despite being planned)
-            if (rand(0, 100) < 20) continue;
-
             $planning->load('shift');
 
             $dateStr = $planning->date instanceof \Carbon\Carbon

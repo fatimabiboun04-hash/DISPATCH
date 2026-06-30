@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\PlanningTemplate;
+use App\Services\AuditService;
 use App\Services\PlanningService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
@@ -43,6 +44,13 @@ class PlanningTemplateController extends Controller
                 $validated['week_number'],
                 $validated['year']
             );
+
+            AuditService::log('template_created', PlanningTemplate::class, $template->id, null, [
+                'name' => $template->name,
+                'week_number' => $template->week_number,
+                'year' => $template->year,
+                'items' => $template->items->count(),
+            ]);
 
             return $this->successResponse($template, 'Template created', 201);
         } catch (\RuntimeException $e) {
@@ -87,6 +95,12 @@ class PlanningTemplateController extends Controller
 
         $duplicate = $this->planningService->duplicateTemplate($planningTemplate, $validated['name']);
 
+        AuditService::log('template_duplicated', PlanningTemplate::class, $duplicate->id, null, [
+            'source_template_id' => $planningTemplate->id,
+            'source_name' => $planningTemplate->name,
+            'new_name' => $duplicate->name,
+        ]);
+
         return $this->successResponse($duplicate, 'Template duplicated', 201);
     }
 
@@ -108,6 +122,14 @@ class PlanningTemplateController extends Controller
             app(\App\Services\NotificationService::class)
                 ->notifyPlanningBatchCreated($createdPlannings);
         }
+
+        AuditService::log('template_applied', PlanningTemplate::class, $planningTemplate->id, null, [
+            'template_name' => $planningTemplate->name,
+            'target_week' => $validated['week_number'],
+            'target_year' => $validated['year'],
+            'created_count' => $result['created_count'],
+            'error_count' => count($result['errors']),
+        ]);
 
         return $this->successResponse($result, 'Template loaded into week');
     }

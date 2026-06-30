@@ -21,12 +21,24 @@ class Planning extends Model
         'is_locked',
     ];
 
+    protected $appends = ['task_count'];
+
     protected $casts = [
         'date' => 'date',
         'week_number' => 'integer',
         'year' => 'integer',
         'is_locked' => 'boolean',
     ];
+
+    public function getTaskCountAttribute(): int
+    {
+        return $this->tasks()->count();
+    }
+
+    public function tasks()
+    {
+        return $this->hasMany(Task::class);
+    }
 
     public function user()
     {

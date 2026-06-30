@@ -3,9 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Models\Task;
+use App\Services\AuditService;
 use App\Services\TaskService;
 use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 class TaskController extends Controller
 {
@@ -41,6 +43,9 @@ class TaskController extends Controller
 
         $task = $this->taskService->create($validated);
 
+        AuditService::log('created', Task::class, $task->id, null, $validated);
+        Cache::forget('dashboard.stats');
+
         return $this->successResponse($task->load(['user', 'planning', 'creator']), 'Task created', 201);
     }
 
@@ -51,6 +56,8 @@ class TaskController extends Controller
 
     public function update(Request $request, Task $task)
     {
+        $old = $task->toArray();
+
         $validated = $request->validate([
             'user_id' => ['sometimes', 'exists:users,id'],
             'planning_id' => ['sometimes', 'exists:plannings,id'],
@@ -63,12 +70,19 @@ class TaskController extends Controller
 
         $task = $this->taskService->update($task, $validated);
 
+        AuditService::log('updated', Task::class, $task->id, $old, $task->fresh()->toArray());
+        Cache::forget('dashboard.stats');
+
         return $this->successResponse($task->load(['user', 'planning', 'creator']), 'Task updated');
     }
 
     public function destroy(Task $task)
     {
+        $taskId = $task->id;
         $this->taskService->delete($task);
+
+        AuditService::log('deleted', Task::class, $taskId);
+        Cache::forget('dashboard.stats');
 
         return $this->successResponse(null, 'Task deleted');
     }

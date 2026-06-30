@@ -12,7 +12,6 @@ class TasksSeeder extends Seeder
     public function run(): void
     {
         $admin = User::where('role', 'admin')->first();
-        $employees = User::where('role', 'employee')->where('status', 'active')->get();
 
         $templates = [
             ['title' => 'Inspection fibre zone nord',       'description' => 'Vérifier l\'intégrité des câbles fibre dans le secteur nord',        'priority' => 'high'],
@@ -43,17 +42,17 @@ class TasksSeeder extends Seeder
 
         $statuses = ['pending', 'in_progress', 'completed', 'completed', 'completed'];
 
-        // Create tasks for past weeks (linked to actual planning records with coherent dates)
+        // Past plannings: assign tasks to ~35% of them (one task each, 20% chance of second)
         $pastPlannings = Planning::where('date', '<', now()->startOfWeek()->format('Y-m-d'))
-            ->where('date', '>=', now()->subWeeks(4)->startOfWeek()->format('Y-m-d'))
             ->whereHas('user', fn($q) => $q->where('status', 'active'))
             ->inRandomOrder()
             ->get();
 
-        $taskIndex = 0;
         foreach ($pastPlannings as $planning) {
-            if ($taskIndex >= count($templates)) break;
-            $template = $templates[$taskIndex];
+            if (rand(1, 100) > 35) continue;
+            if ($planning->tasks()->exists()) continue;
+
+            $template = $templates[array_rand($templates)];
             $status = in_array($template['priority'], ['critical', 'high']) && rand(0, 1)
                 ? 'completed'
                 : $statuses[array_rand($statuses)];
@@ -68,17 +67,33 @@ class TasksSeeder extends Seeder
                 'due_date' => $planning->date,
                 'created_by' => $admin->id,
             ]);
-            $taskIndex++;
+
+            // 20% chance of a second task
+            if (rand(1, 100) <= 20) {
+                $template2 = $templates[array_rand($templates)];
+                Task::create([
+                    'user_id' => $planning->user_id,
+                    'planning_id' => $planning->id,
+                    'title' => $template2['title'],
+                    'description' => $template2['description'],
+                    'status' => $statuses[array_rand($statuses)],
+                    'priority' => $template2['priority'],
+                    'due_date' => $planning->date,
+                    'created_by' => $admin->id,
+                ]);
+            }
         }
 
-        // Create additional tasks for the current week (all linked)
+        // Current week: assign tasks to 20% of current week plannings
         $currentWeekPlannings = Planning::where('week_number', (int) now()->isoWeek)
             ->where('year', (int) now()->isoWeekYear)
+            ->whereDoesntHave('tasks')
             ->inRandomOrder()
-            ->limit(10)
             ->get();
 
         foreach ($currentWeekPlannings as $planning) {
+            if (rand(1, 100) > 20) continue;
+
             $template = $templates[array_rand($templates)];
             $status = $statuses[array_rand($statuses)];
 
@@ -90,28 +105,6 @@ class TasksSeeder extends Seeder
                 'status' => $status,
                 'priority' => $template['priority'],
                 'due_date' => (clone $planning->date)->addDays(rand(0, 3))->format('Y-m-d'),
-                'created_by' => $admin->id,
-            ]);
-        }
-
-        // Add archived tasks linked to older past plannings
-        $oldPlannings = Planning::where('date', '<', now()->subWeeks(4)->startOfWeek()->format('Y-m-d'))
-            ->whereHas('user', fn($q) => $q->where('status', 'active'))
-            ->inRandomOrder()
-            ->limit(5)
-            ->get();
-
-        foreach ($oldPlannings as $planning) {
-            $template = $templates[array_rand($templates)];
-
-            Task::create([
-                'user_id' => $planning->user_id,
-                'planning_id' => $planning->id,
-                'title' => $template['title'] . ' (archive)',
-                'description' => $template['description'] . ' — tâche archivée',
-                'status' => 'completed',
-                'priority' => $template['priority'],
-                'due_date' => $planning->date,
                 'created_by' => $admin->id,
             ]);
         }
